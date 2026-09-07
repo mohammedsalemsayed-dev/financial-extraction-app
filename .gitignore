@@ -1,0 +1,12 @@
+# Source control contains only the app and extraction source.
+*.pdf
+*.xlsx
+*.zip
+*.log
+__pycache__/
+_t/
+financial_extract/session/
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db

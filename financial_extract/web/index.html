@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Financial Table Extraction</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="mark">▚</span>
+    <span class="name">Financial Table Extraction</span>
+    <span class="tag">local · deterministic</span>
+  </div>
+  <div class="topbar-right">
+    <span class="offline">no network · no OCR · no LLM</span>
+    <button id="exportBtn" class="btn primary" disabled>Export Excel</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <aside class="rail">
+    <div id="drop" class="drop">
+      <input type="file" id="fileInput" accept="application/pdf" multiple hidden>
+      <p class="drop-lead">Drop annual-report PDFs here</p>
+      <p class="drop-sub">or <button class="linkbtn" id="pickBtn">choose files</button></p>
+    </div>
+    <div class="rail-head">
+      <span>Documents</span><span id="docCount" class="count">0</span>
+    </div>
+    <ul id="docList" class="doclist"></ul>
+  </aside>
+
+  <section id="stage" class="stage">
+    <div class="empty" id="emptyState">
+      <h1>Extract two statements, verified by arithmetic</h1>
+      <p>Add one or more annual-report PDFs. For each, the engine locates the
+        consolidated income statement and the operating-expenses note using
+        page geometry — text coordinates, alignment, ruling lines, vocabulary —
+        then checks that the figures reconcile. Nothing leaves this machine.</p>
+      <ul class="empty-steps">
+        <li><b>1</b> Add PDFs on the left</li>
+        <li><b>2</b> Click a document to extract</li>
+        <li><b>3</b> Review against the page, edit any cell, re-check</li>
+        <li><b>4</b> Export to Excel</li>
+      </ul>
+    </div>
+  </section>
+
+</main>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/web/app.js"></script>
+</body>
+</html>
