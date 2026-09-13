@@ -1,0 +1,49 @@
+{
+  "_comment": "Ground truth read BY HAND from the raw PDF text (not the extractor). Each entry: the value the given line item must carry in value column [col] (0 = most recent year) of the detected statement of [kind] on page [page]. If the extractor ever disagrees, the test fails -- this is the independent check the golden snapshot cannot give.",
+  "anchors": [
+    {"file": "du annual 2020.pdf", "page": 71, "kind": "income statement", "label": "^Revenue$", "col": 0, "value": 11083845},
+    {"file": "du annual 2020.pdf", "page": 71, "kind": "income statement", "label": "^Revenue$", "col": 1, "value": 12587958},
+    {"file": "du annual 2020.pdf", "page": 71, "kind": "income statement", "label": "Operating expenses", "col": 0, "value": -8253903},
+    {"file": "du annual 2020.pdf", "page": 71, "kind": "income statement", "label": "Federal royalty", "col": 0, "value": -1511938},
+    {"file": "du annual 2020.pdf", "page": 71, "kind": "income statement", "label": "Finance income", "col": 1, "value": 124052},
+    {"file": "du annual 2020.pdf", "page": 71, "kind": "income statement", "label": "Profit for the year", "col": 0, "value": 1442914},
+    {"file": "du annual 2020.pdf", "page": 71, "kind": "income statement", "label": "Profit for the year", "col": 1, "value": 1730954},
+
+    {"file": "du annual 2024.pdf", "page": 93, "kind": "income statement", "label": "^Revenue$", "col": 0, "value": 14635917},
+    {"file": "du annual 2024.pdf", "page": 93, "kind": "income statement", "label": "Operating expenses", "col": 0, "value": -10059524},
+    {"file": "du annual 2024.pdf", "page": 93, "kind": "income statement", "label": "Operating expenses", "col": 1, "value": -9793238},
+    {"file": "du annual 2024.pdf", "page": 93, "kind": "income statement", "label": "Finance costs", "col": 0, "value": -89945},
+    {"file": "du annual 2024.pdf", "page": 93, "kind": "income statement", "label": "Profit for the year", "col": 0, "value": 2487547},
+    {"file": "du annual 2024.pdf", "page": 93, "kind": "income statement", "label": "Profit for the year", "col": 1, "value": 1667851},
+
+    {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "Property, plant and equipment", "col": 0, "value": 10288767},
+    {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "Total non-current assets", "col": 0, "value": 13821557},
+    {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "Total current assets", "col": 0, "value": 5554152},
+    {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "Total assets", "col": 0, "value": 19375709},
+    {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "Total assets", "col": 1, "value": 18693292},
+    {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "Total equity", "col": 0, "value": 10148291},
+
+    {"file": "en-2021-etisalat-group-annual-report.pdf", "page": 61, "kind": "income statement", "label": "^Revenue$", "col": 0, "value": 53342246},
+    {"file": "en-2021-etisalat-group-annual-report.pdf", "page": 61, "kind": "income statement", "label": "^Revenue$", "col": 1, "value": 51708211},
+    {"file": "en-2021-etisalat-group-annual-report.pdf", "page": 61, "kind": "income statement", "label": "Operating expenses", "col": 0, "value": -34081274},
+    {"file": "en-2021-etisalat-group-annual-report.pdf", "page": 61, "kind": "income statement", "label": "Federal royalty", "col": 0, "value": -5541606},
+    {"file": "en-2021-etisalat-group-annual-report.pdf", "page": 61, "kind": "income statement", "label": "Profit before tax", "col": 0, "value": 12804461},
+    {"file": "en-2021-etisalat-group-annual-report.pdf", "page": 61, "kind": "income statement", "label": "Income tax expenses", "col": 0, "value": -1744972},
+    {"file": "en-2021-etisalat-group-annual-report.pdf", "page": 61, "kind": "income statement", "label": "Profit for the year", "col": 0, "value": 11059489},
+    {"file": "en-2021-etisalat-group-annual-report.pdf", "page": 61, "kind": "income statement", "label": "Profit for the year", "col": 1, "value": 10315736},
+
+    {"file": "en-2020-etisalat-group-annual-report.pdf", "page": 61, "kind": "statement of cash flows", "label": "Depreciation", "col": 0, "value": 6203909},
+    {"file": "en-2020-etisalat-group-annual-report.pdf", "page": 61, "kind": "statement of cash flows", "label": "Net cash generated from operating activities", "col": 0, "value": 18968486},
+    {"file": "en-2020-etisalat-group-annual-report.pdf", "page": 61, "kind": "statement of cash flows", "label": "Net cash used in financing activities", "col": 0, "value": -9443479},
+    {"file": "en-2020-etisalat-group-annual-report.pdf", "page": 61, "kind": "statement of cash flows", "label": "Net increase / \\(decrease\\) in cash", "col": 0, "value": 11062691},
+    {"file": "en-2020-etisalat-group-annual-report.pdf", "page": 61, "kind": "statement of cash flows", "label": "at the end of the year", "col": 0, "value": 13205530},
+    {"file": "en-2020-etisalat-group-annual-report.pdf", "page": 61, "kind": "statement of cash flows", "label": "at the beginning of the year", "col": 0, "value": 2827314},
+
+    {"file": "integrated-reporten-2023.pdf", "page": 109, "kind": "income statement", "label": "^Revenue$", "col": 0, "value": 53752118},
+    {"file": "integrated-reporten-2023.pdf", "page": 109, "kind": "income statement", "label": "Operating expenses", "col": 0, "value": -34371770},
+    {"file": "integrated-reporten-2023.pdf", "page": 109, "kind": "income statement", "label": "Federal royalty", "col": 0, "value": -6328722},
+    {"file": "integrated-reporten-2023.pdf", "page": 109, "kind": "income statement", "label": "Profit before tax", "col": 0, "value": 12698444},
+    {"file": "integrated-reporten-2023.pdf", "page": 109, "kind": "income statement", "label": "Profit for the year", "col": 0, "value": 11144210},
+    {"file": "integrated-reporten-2023.pdf", "page": 109, "kind": "income statement", "label": "Profit for the year", "col": 1, "value": 10525698}
+  ]
+}

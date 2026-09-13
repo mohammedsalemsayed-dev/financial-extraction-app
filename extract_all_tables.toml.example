@@ -1,0 +1,26 @@
+# Copy to  extract_all_tables.toml  (same folder as the script) to override any
+# tuned threshold.  Only the keys below are recognised; unknown keys are ignored.
+# Values shown are the built-in defaults.
+
+# --- detection ---
+two_up_page_width      = 700     # a page wider than this is treated as a landscape 2-up spread
+overlap_dedup          = 0.55    # boxes overlapping more than this are the same table
+recon_head_max_start   = 40      # a statement heading must start within N chars of the line start
+recon_head_max_len     = 95      # ...and be no longer than this
+recon_min_anchor_words = 3       # a reconstructed statement needs >= N known line-items
+
+# --- arithmetic tolerances (statement's own units, usually thousands) ---
+tol_pl        = 2.0
+tol_bs        = 2.0
+tol_cashflow  = 200.0
+tol_equity    = 5.0
+
+# --- statement vs. noise ---
+prose_row_ratio = 0.30           # > this fraction of figure-less sentence rows -> not a statement
+prose_min_words = 7
+max_year_gap    = 2              # header years further apart than this are mis-read
+
+# --- label health / rendering / scanned guard ---
+health_bad_below       = 0.75
+page_render_scale       = 2.0
+scanned_chars_per_page = 90

@@ -1,0 +1,49 @@
+name: tests
+
+on:
+  push:
+    paths:
+      - "extract_all_tables.py"
+      - "serve.py"
+      - "telecom_extract.py"
+      - "tablekit/**"
+      - "tablekit_tests/**"
+      - "requirements.txt"
+      - ".github/workflows/tests.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # requirements.txt now includes img2table/opencv-python-headless/pandas
+      # (the second geometry engine + manual box-select's primary path) --
+      # CI genuinely exercises that code path, not a fallback-only version of it.
+      - run: pip install -r requirements.txt pytest
+
+      # Pure-logic suites -- no PDFs needed, so these gate every push:
+      #   test_units.py         analyze / health / cross-year / stitch / cash-flow
+      #   test_serve.py         inventory shape / edits / one-workbook export
+      #   test_manual_mode.py   img2table_backend region merge/select logic,
+      #                         serve.py upload/search/_resolve (the PDF-gated
+      #                         parts of this file skip cleanly below)
+      #   test_golden.py        the parser + reconcile-explain cases
+      - name: unit + backend tests (no PDFs needed)
+        run: pytest tablekit_tests/test_units.py tablekit_tests/test_serve.py tablekit_tests/test_manual_mode.py -q
+
+      - name: parser + reconcile-explain cases
+        run: pytest tablekit_tests/test_golden.py -q -k "parse_number or reconcile_explain or every_snapshot"
+
+      # The full golden snapshot + hand-verified anchors, and the
+      # PDF-gated cases in test_manual_mode.py, need the 24 report PDFs,
+      # which are not committed -- they run locally and skip in CI.
+      - name: golden + anchors + PDF-gated manual-mode cases (skip cleanly if PDFs absent)
+        run: pytest tablekit_tests/test_golden.py tablekit_tests/test_manual_mode.py -q
