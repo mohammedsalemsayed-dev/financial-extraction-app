@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.7.5
+
+Found by actually loading many real files at once (16 years of one company's
+annual reports plus several of another's) instead of the small, clean sets
+every automated test uses -- three real bugs, none of them hypothetical:
+
+- **A file could appear twice in the dropdown under the identical name, with
+  the second entry silently dead.** `_discover_files` (the startup file
+  list: CLI-arg files plus whatever's in `uploads/`) deduped by resolved
+  path, not by name -- two genuinely different files at different paths
+  (a CLI-arg-loaded report, and a same-named copy sitting in `uploads/`
+  from an earlier session's upload) both got listed. `_path()` resolves a
+  filename to the FIRST match, so the second entry looked selectable but
+  always silently showed the first file's content -- confusing, not
+  crashing, which is exactly the kind of bug that survives every "does it
+  crash" check. Fixed by deduping on name; CLI-arg files still win, matching
+  what the function's own docstring already claimed but the code didn't
+  actually do.
+- **The same collision, reachable a second way.** `upload_pdf`'s
+  rename-on-conflict (`report.pdf` -> `report_1.pdf`) only checked
+  `UPLOAD_DIR` on disk, not the full loaded file list -- uploading a file
+  whose name matched a CLI-arg-loaded file (living elsewhere, so never
+  physically present in `UPLOAD_DIR`) produced the identical dead-entry
+  problem live, mid-session. Fixed the same way: the collision check now
+  also considers every already-loaded file's name, not just what's
+  physically in the uploads folder.
+- **The page-number box silently ignored Enter.** Typing a page number and
+  pressing Enter -- the obvious way to do it, and how the adjacent search
+  box already works -- did nothing; only clicking away (blur) navigated.
+  `onchange` fires on blur, not on Enter in a bare `<input>`. Added the same
+  `keydown`-checks-for-Enter handler `#searchQ` already had.
+
+Both server-side fixes got regression tests (`test_serve.py`); the
+page-number fix was verified live by dispatching a real `KeyboardEvent`
+against the running page and confirming the page-image request fired with
+the typed page number, since `test_webui_logic.js` deliberately doesn't
+simulate DOM interaction (see its own header comment for why).
+
 ## 0.7.4
 
 - **`webui.html` split into `webui.html` (67-line shell) + `webui.css` (347 lines) + `webui.js` (1519 lines)**, served as three separate files (`serve.py` gained two routes, `/webui.css` and `/webui.js`, alongside the existing `/`). Reconsidered rather than assumed: this project has no build step and no bundler, and keeping everything in one file to avoid needing either is itself a legitimate, common, professional choice for a no-build local tool -- splitting isn't automatically "more correct." What tipped it here is concrete, already-paid cost, not a style preference: getting ESLint and `tsc` to check the inline script at all (0.7.1, 0.7.2) needed a dedicated extraction step (`extract_inline_script.mjs`, regexing the `<script>` block out to a temp file) precisely because the JS wasn't a real file. Splitting removes that workaround rather than adding one -- `extract_inline_script.mjs` is deleted, both tools now run directly against `webui.js`. It also wasn't a "the app must still work if you just open the HTML file" concession: every feature already round-trips through `fetch()` to `serve.py`'s `/api/*` endpoints, so the app never worked without the server running regardless of where the JS lived.

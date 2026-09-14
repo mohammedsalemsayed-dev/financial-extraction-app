@@ -428,9 +428,18 @@ def upload_pdf(filename, data_b64):
     if not safe.lower().endswith(".pdf"):
         safe += ".pdf"
     UPLOAD_DIR.mkdir(exist_ok=True)
+    # dest.exists() alone only catches a collision with an earlier upload
+    # already sitting in UPLOAD_DIR -- a same-named CLI-arg file loaded from
+    # elsewhere (found live, running with several real files loaded at
+    # once: see _discover_files) wouldn't physically exist AT this path, so
+    # it slipped through and produced two dropdown entries under one name,
+    # the second permanently unreachable (_path() resolves by name, first
+    # match wins). Checking the loaded file list too closes that.
+    with _lock:
+        existing_names = {f.name for f in _state["files"]}
     dest = UPLOAD_DIR / safe
     i = 1
-    while dest.exists():
+    while dest.exists() or dest.name in existing_names:
         dest = UPLOAD_DIR / f"{Path(safe).stem}_{i}{Path(safe).suffix}"
         i += 1
     dest.write_bytes(base64.b64decode(data_b64))
@@ -859,8 +868,14 @@ def _discover_files(pdf_args):
     launching with no arguments (the normal run_app.bat path) always starts
     on a blank onboarding screen even when uploads/ still has last session's
     PDF sitting right there, which would make session persistence pointless
-    (the file wouldn't even be listed). De-duplicated by resolved path,
-    CLI-arg order wins."""
+    (the file wouldn't even be listed). De-duplicated by NAME, not just
+    resolved path (found live: launching with a directory that happens to
+    share a filename with something uploaded in an earlier session -- e.g.
+    the CLI-arg copy of a report AND an uploads/ copy of the same report,
+    genuinely different files at genuinely different paths -- listed twice
+    under the identical display name; _path()'s name-based lookup always
+    resolves the FIRST one, so the second was already a dead, confusing
+    entry in the dropdown, never actually reachable). CLI-arg order wins."""
     files = []
     for a in pdf_args:
         p = Path(a)
@@ -870,12 +885,12 @@ def _discover_files(pdf_args):
             files.append(p)
         else:
             LOG.warning("skipping %s (not a PDF)", a)
-    seen = {f.resolve() for f in files}
+    seen_names = {f.name for f in files}
     if UPLOAD_DIR.is_dir():
         for p in sorted(UPLOAD_DIR.glob("*.pdf")):
-            if p.resolve() not in seen:
+            if p.name not in seen_names:
                 files.append(p)
-                seen.add(p.resolve())
+                seen_names.add(p.name)
     return files
 
 

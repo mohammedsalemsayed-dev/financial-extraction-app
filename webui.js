@@ -875,6 +875,12 @@ function renderPicker(){
   $("#pgPrev").onclick = ()=>gotoPage(state.page-1);
   $("#pgNext").onclick = ()=>gotoPage(state.page+1);
   $("#pgNum").onchange = e=>gotoPage(parseInt(e.target.value,10)||1);
+  // onchange alone only commits on blur -- found live (typing a page number
+  // and pressing Enter, the natural way to do it, silently did nothing
+  // until the input lost focus some other way) -- #searchQ already has this
+  // same "press Enter" pattern, this just matches it.
+  $("#pgNum").onkeydown = e=>{ if (e.key==="Enter"){ e.preventDefault();
+    gotoPage(parseInt(e.target.value,10)||1); } };
   $("#extractBtn").onclick = doExtractRegion;
   $("#pickerZoomBtn").onclick = ()=>{
     state.pickerZoom = !state.pickerZoom;

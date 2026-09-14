@@ -240,6 +240,27 @@ def test_upload_pdf_still_strips_path_separators_and_reserved_chars(
     assert "/" not in name and "\\" not in name and ":" not in name
 
 
+def test_upload_pdf_renames_on_collision_with_an_already_loaded_file_not_in_upload_dir(
+        wired, monkeypatch, tmp_path):
+    """The old collision check was `dest.exists()` -- only catches a name
+    already physically sitting in UPLOAD_DIR. Found live: a file loaded via
+    a CLI arg (so it lives elsewhere, e.g. the repo root) doesn't physically
+    exist AT the UPLOAD_DIR path, so uploading a NEW file with that same
+    name slipped through undetected and produced the identical dead-entry
+    problem the _discover_files fix above addresses -- this is the other
+    half of the same bug, on the live-upload path instead of startup scan."""
+    import base64
+    uploads = tmp_path / "uploads"
+    monkeypatch.setattr(serve, "UPLOAD_DIR", uploads)
+    elsewhere = tmp_path / "elsewhere.pdf"
+    elsewhere.write_bytes(b"%PDF-1.4 loaded from a CLI arg, not an upload")
+    with serve._lock:
+        serve._state["files"] = [elsewhere.with_name("report.pdf")]
+    name = serve.upload_pdf("report.pdf", base64.b64encode(b"%PDF-1.4 new upload").decode())
+    assert name != "report.pdf"
+    assert name == "report_1.pdf"
+
+
 def test_discover_files_rediscovers_previously_uploaded_pdfs(monkeypatch, tmp_path):
     uploads = tmp_path / "uploads"
     uploads.mkdir()
@@ -258,6 +279,27 @@ def test_discover_files_does_not_duplicate_a_cli_arg_already_in_uploads(monkeypa
     monkeypatch.setattr(serve, "UPLOAD_DIR", uploads)
     files = serve._discover_files([str(pdf)])
     assert len(files) == 1
+
+
+def test_discover_files_dedupes_by_name_not_just_resolved_path(monkeypatch, tmp_path):
+    """Found live: launching against a directory that has "report.pdf" while
+    uploads/ ALSO has a "report.pdf" (a genuinely different file, e.g. from
+    an earlier session's upload of the same-named report) listed both --
+    _path()'s name-based lookup always resolves the first, so the second was
+    a dead, confusing dropdown entry, not just a harmless extra. These two
+    files are at different paths (unlike the identical-path case above), so
+    the old resolved-path dedup didn't catch it; only a name-based one does."""
+    cli_dir = tmp_path / "reports"
+    cli_dir.mkdir()
+    cli_pdf = cli_dir / "report.pdf"
+    cli_pdf.write_bytes(b"%PDF-1.4 from the CLI-arg directory")
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    (uploads / "report.pdf").write_bytes(b"%PDF-1.4 a DIFFERENT file, same name")
+    monkeypatch.setattr(serve, "UPLOAD_DIR", uploads)
+    files = serve._discover_files([str(cli_dir)])
+    assert [f.name for f in files] == ["report.pdf"]     # not duplicated
+    assert files[0] == cli_pdf                            # CLI-arg order wins
 
 
 def test_free_port_returns_an_open_port():
