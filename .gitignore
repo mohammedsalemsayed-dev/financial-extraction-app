@@ -10,3 +10,8 @@ financial_extract/session/
 # Editor and operating-system files
 .DS_Store
 Thumbs.db
+
+# Design-canvas mockups: keep the .dc.html sources, skip the seeded/published
+# output (a multi-MB copy of the editor payload, not app source).
+.design-mockup/*.html
+!.design-mockup/*.dc.html

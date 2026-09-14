@@ -1,0 +1,160 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <style>
+    :root{
+      --bg:#1a2332; --bg-soft:#111827; --fg:#f0ede8; --muted:#9ca8b8; --line:#2d3a4d; --line2:#243247;
+      --accent:#f4b740; --accent-hover:#d4af37; --accent-weak:#3a3222;
+      --navy:#f0ede8;
+      --ok:#6bb845; --ok-bg:#1e2e18; --warn:#f1c40f; --warn-bg:#3a3018;
+      --bad:#ef5350; --bad-bg:#3a1f1f; --none:#6b7280; --radius:9px;
+      --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+      --shadow-md:0 2px 10px rgba(0,0,0,.35),0 1px 2px rgba(0,0,0,.2);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg-soft);color:var(--fg);
+      font:13px/1.55 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      -webkit-font-smoothing:antialiased}
+    button{font:inherit;cursor:pointer;color:inherit}
+    input{font:inherit;color:inherit}
+
+    .app{display:flex;flex-direction:column;height:900px;width:1440px;overflow:hidden;border-radius:10px;box-shadow:0 1px 0 rgba(30,58,95,.08)}
+
+    header{display:flex;align-items:center;gap:12px;padding:11px 20px;
+      border-bottom:1px solid var(--line);background:var(--bg);box-shadow:var(--shadow-sm);flex:none}
+    .brand{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:-.02em;font-size:14.5px}
+    .logo-mark{display:flex;align-items:center;justify-content:center;width:26px;height:26px;
+      border-radius:8px;background:var(--accent);flex:none}
+    .spacer{flex:1}
+    .count{color:var(--muted)}
+    .btn{padding:6px 12px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+      font-weight:500;display:inline-flex;align-items:center;gap:6px}
+    .btn[disabled]{opacity:.45;pointer-events:none}
+    .btn-primary{padding:7px 15px;border:1px solid var(--accent);border-radius:7px;
+      background:var(--accent);color:#1a2332;font-weight:600;box-shadow:var(--shadow-sm);
+      display:inline-flex;align-items:center;gap:6px}
+    .btn-primary[disabled]{opacity:.4;pointer-events:none;box-shadow:none}
+    .btn-accent{border:1px solid var(--accent);color:var(--accent);background:var(--accent-weak);
+      font-weight:600;padding:6px 12px;border-radius:7px;display:inline-flex;align-items:center;gap:6px}
+    .icon-btn{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+      display:flex;align-items:center;justify-content:center}
+    .txt{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);width:180px;color:var(--muted)}
+
+    .body{display:flex;flex:1;min-height:0}
+    aside{width:308px;flex:none;background:var(--bg);border-right:1px solid var(--line);
+      display:flex;flex-direction:column;overflow:hidden}
+    .barbtns{display:flex;gap:6px;padding:8px 11px;border-bottom:1px solid var(--line2);flex-wrap:wrap}
+    .barbtns .btn{font-size:12px;padding:4px 9px}
+    .sidelist{flex:1;overflow:auto;padding-bottom:8px;display:flex;align-items:flex-start;justify-content:center}
+    .empty-msg{color:var(--muted);text-align:center;font-size:13px;margin-top:40px;padding:0 20px}
+
+    main{flex:1;min-width:0;padding:20px 24px;overflow:auto;background:var(--bg-soft);display:flex;align-items:center;justify-content:center}
+    .onboarding{max-width:680px;margin:0 auto;padding:0 20px}
+    .onb-title{text-align:center;color:var(--navy);font-size:22px;margin:0 0 22px}
+    .onb-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+    .onb-step{background:var(--bg);border:1px solid var(--line);border-radius:14px;
+      padding:18px 16px;box-shadow:var(--shadow-sm)}
+    .onb-icon{width:40px;height:40px;border-radius:10px;background:var(--accent);
+      display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+    .onb-h{font-weight:700;color:var(--navy);margin-bottom:5px;font-size:14px}
+    .onb-b{color:var(--muted);font-size:12.5px;line-height:1.55}
+
+    .dropzone{max-width:680px;margin:22px auto 0;padding:0 20px}
+    .dz-box{border:2px dashed var(--line);border-radius:14px;background:var(--bg);
+      padding:26px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:8px}
+    .dz-icon{width:46px;height:46px;border-radius:12px;background:var(--accent-weak);
+      display:flex;align-items:center;justify-content:center;color:var(--accent)}
+    .dz-h{font-weight:700;color:var(--navy);font-size:14px}
+    .dz-b{color:var(--muted);font-size:12px}
+  </style>
+</helmet>
+
+<div class="app">
+  <header>
+    <span class="brand">
+      <span class="logo-mark">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect x="1" y="8" width="3" height="7" rx="1" fill="#1a2332"></rect>
+          <rect x="6.5" y="4" width="3" height="11" rx="1" fill="#1a2332"></rect>
+          <rect x="12" y="1" width="3" height="14" rx="1" fill="#1a2332"></rect>
+        </svg>
+      </span>
+      <span>Tables</span>
+    </span>
+    <button class="btn-accent">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6"></path><path d="M4 20h16"></path></svg>
+      Upload PDF
+    </button>
+    <span class="count"></span>
+    <button class="btn" disabled>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M3 12l4-4M3 12l4 4M21 12l-4-4M21 12l-4 4"></path></svg>
+      Side by side
+    </button>
+    <span class="spacer"></span>
+    <button class="icon-btn">EN / ع</button>
+    <button class="icon-btn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+    </button>
+    <input class="txt" placeholder="workbook name" disabled>
+    <button class="btn-primary" disabled>Export</button>
+  </header>
+
+  <div class="body">
+    <aside>
+      <div class="barbtns">
+        <button class="btn" disabled>+ Select a table</button>
+        <button class="btn" disabled>Select all statements</button>
+        <button class="btn" disabled>Clear</button>
+      </div>
+      <div class="sidelist">
+        <div class="empty-msg">Upload a PDF to get started.</div>
+      </div>
+    </aside>
+
+    <main>
+      <div>
+        <div class="onboarding">
+          <h2 class="onb-title">How it works</h2>
+          <div class="onb-steps">
+            <div class="onb-step">
+              <div class="onb-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1a2332" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3h10l4 4v14H4z"></path><path d="M14 3v4h4"></path></svg></div>
+              <div class="onb-h">Pick a page</div>
+              <div class="onb-b">Browse the PDF and find the table you want.</div>
+            </div>
+            <div class="onb-step">
+              <div class="onb-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1a2332" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="12" rx="1" stroke-dasharray="3 2"></rect></svg></div>
+              <div class="onb-h">Draw a box</div>
+              <div class="onb-b">Drag a rectangle around just the rows and columns you need.</div>
+            </div>
+            <div class="onb-step">
+              <div class="onb-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1a2332" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 12l3 3 5-6"></path></svg></div>
+              <div class="onb-h">Check the verdict</div>
+              <div class="onb-b">Every extraction is checked against its own printed totals — a foots pill tells you if it adds up.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dropzone">
+          <div class="dz-box">
+            <div class="dz-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6"></path><path d="M4 20h16"></path></svg>
+            </div>
+            <div class="dz-h">Drop a PDF here, or click Upload PDF above</div>
+            <div class="dz-b">Everything runs locally — nothing leaves this machine.</div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -31,6 +31,7 @@ import pdfplumber
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 import extract_all_tables as X  # noqa: E402
+from tablekit.parse import FormattedNumber  # noqa: E402
 
 HTML = ROOT / "webui.html"
 LOG = logging.getLogger("tablekit.serve")
@@ -397,6 +398,20 @@ def inventory(name):
             "auto_scanned": name in _state["scans"]}
 
 
+def _fmt_row(row):
+    """A cell may carry a currency symbol and/or a '%' the user typed or the
+    extractor read (see tablekit.parse.FormattedNumber) that the numeric
+    VALUE itself never keeps -- it has to stay a plain number for footing,
+    health scoring and every arithmetic comparison to keep working. Rather
+    than change what `rows` sends (every existing consumer of a numeric cell,
+    server and browser alike, expects a plain number there), send the
+    original formatting as a same-shaped side channel the UI can use to
+    re-append '$'/'%' onto the DISPLAYED text without touching the value
+    driving Δ / Δ% or the "num" right-align styling."""
+    return [{"p": v.prefix, "s": v.suffix} if isinstance(v, FormattedNumber) and (v.prefix or v.suffix)
+            else None for v in row]
+
+
 def _detail(t, n):
     h = t.get("health") or {}
     return {
@@ -416,6 +431,7 @@ def _detail(t, n):
         "value_cols": t.get("value_cols") or [],
         "total_rows": t.get("total_rows") or [],
         "rows": t["rows"],
+        "fmt": [_fmt_row(r) for r in t["rows"]],
     }
 
 

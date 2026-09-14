@@ -1,0 +1,208 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <style>
+    :root{
+      --bg:#fefdfb; --bg-soft:#f8f7f5; --fg:#1e3a5f; --muted:#6b6257; --line:#e8dcc4; --line2:#f0ede8;
+      --accent:#d4af37; --accent-hover:#c99d32; --accent-weak:#faf3df;
+      --navy:#1e3a5f;
+      --ok:#4a8c2a; --ok-bg:#f0f7ea; --warn:#b45309; --warn-bg:#fffbeb;
+      --bad:#b91c1c; --bad-bg:#fef2f2; --none:#9ca3af; --radius:9px;
+      --shadow-sm:0 1px 2px rgba(30,58,95,.06);
+      --shadow-md:0 2px 10px rgba(30,58,95,.08),0 1px 2px rgba(30,58,95,.05);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg-soft);color:var(--fg);
+      font:13px/1.55 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      -webkit-font-smoothing:antialiased}
+    button{font:inherit;cursor:pointer;color:inherit}
+    input,select{font:inherit;color:inherit}
+
+    .app{display:flex;flex-direction:column;height:900px;width:1440px;overflow:hidden;border-radius:10px;box-shadow:0 1px 0 rgba(30,58,95,.08)}
+
+    header{display:flex;align-items:center;gap:12px;padding:11px 20px;
+      border-bottom:1px solid var(--line);background:var(--bg);box-shadow:var(--shadow-sm);flex:none}
+    .brand{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:-.02em;font-size:14.5px}
+    .logo-mark{display:flex;align-items:center;justify-content:center;width:26px;height:26px;
+      border-radius:8px;background:var(--accent);flex:none}
+    .spacer{flex:1}
+    .count{color:var(--muted)}
+    .pill{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;
+      display:inline-flex;align-items:center;gap:4px;white-space:nowrap;letter-spacing:.01em}
+    .pill-ok{color:var(--ok);background:var(--ok-bg)}
+    .btn{padding:6px 12px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+      font-weight:500;display:inline-flex;align-items:center;gap:6px}
+    .btn-primary{padding:7px 15px;border:1px solid var(--accent);border-radius:7px;
+      background:var(--accent);color:#fff;font-weight:600;box-shadow:var(--shadow-sm);
+      display:inline-flex;align-items:center;gap:6px}
+    .btn-accent{border:1px solid var(--accent);color:var(--accent);background:var(--accent-weak);
+      font-weight:600;padding:6px 12px;border-radius:7px}
+    .icon-btn{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+      display:flex;align-items:center;justify-content:center}
+    .txt{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);width:180px}
+
+    .body{display:flex;flex:1;min-height:0}
+    aside{width:308px;flex:none;background:var(--bg);border-right:1px solid var(--line);
+      display:flex;flex-direction:column;overflow:hidden}
+    .barbtns{display:flex;gap:6px;padding:8px 11px;border-bottom:1px solid var(--line2);flex-wrap:wrap}
+    .barbtns .btn{font-size:12px;padding:4px 9px}
+    .barbtns .btn-accent{font-size:12px;padding:4px 9px}
+    .sidelist{flex:1;overflow:auto;padding-bottom:8px}
+    .grouphd{padding:14px 15px 5px;font-size:11px;font-weight:600;letter-spacing:.06em;
+      text-transform:uppercase;color:var(--muted)}
+    .row{display:flex;gap:9px;align-items:flex-start;padding:9px 13px;border-left:3px solid transparent}
+    .row.active{background:var(--accent-weak);border-left-color:var(--accent)}
+    .row input[type=checkbox]{margin-top:3px;accent-color:var(--accent);width:15px;height:15px}
+    .row-body{flex:1;min-width:0}
+    .row-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+    .row-sub{color:var(--muted);font-size:12px;margin-top:1px}
+    .row-meta{display:flex;align-items:center;gap:7px;margin-top:6px;flex-wrap:wrap}
+    .hbar{width:56px;height:3px;border-radius:2px;background:var(--line);overflow:hidden;flex:none}
+    .hbar>i{display:block;height:100%}
+
+    main{flex:1;min-width:0;padding:20px 24px;overflow:auto;background:var(--bg-soft)}
+    .pv-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+    .pv-head h2{font-size:16px;margin:0;letter-spacing:-.01em}
+    .where{color:var(--muted)}
+    .card{border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--bg);box-shadow:var(--shadow-sm);max-width:760px}
+    .card-cap{display:flex;align-items:center;gap:10px;padding:8px 13px;
+      border-bottom:1px solid var(--line2);font-size:12px;font-weight:600;color:var(--muted);background:var(--bg-soft)}
+
+    table.tbl{border-collapse:collapse;width:100%;font-size:12px}
+    table.tbl td,table.tbl th{padding:4px 9px;border-bottom:1px solid var(--line2);text-align:left;vertical-align:top}
+    table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+    table.tbl tr.hdr td{background:var(--line2);font-weight:600}
+    table.tbl tr.total td{font-weight:600;border-top:1.5px solid var(--fg)}
+
+    #compare{margin-top:22px;border-top:1px solid var(--line);padding-top:16px;max-width:760px}
+    #compare .cmp-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+    #compare .cmp-head b{font-size:14px}
+    #compare select{padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+    .cmp-verdict{font-size:12px;color:var(--ok);margin-bottom:8px;display:flex;align-items:center;gap:6px;font-weight:600}
+    .cmp-verdict.warn{color:var(--warn)}
+    #compare table{border-collapse:collapse;width:100%;font-size:12px;background:var(--bg);
+      border:1px solid var(--line);border-radius:8px;overflow:hidden}
+    #compare td,#compare th{padding:5px 9px;border-bottom:1px solid var(--line2);text-align:left}
+    #compare thead th{background:var(--line2);font-weight:600}
+    #compare td.num{text-align:right;font-variant-numeric:tabular-nums}
+    #compare tr.restated td{background:var(--bad-bg)}
+    .restated-tag{color:var(--bad);font-size:10.5px;font-weight:700;margin-left:5px}
+  </style>
+</helmet>
+
+<div class="app">
+  <header>
+    <span class="brand">
+      <span class="logo-mark">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect x="1" y="8" width="3" height="7" rx="1" fill="#fff"></rect>
+          <rect x="6.5" y="4" width="3" height="11" rx="1" fill="#fff"></rect>
+          <rect x="12" y="1" width="3" height="14" rx="1" fill="#fff"></rect>
+        </svg>
+      </span>
+      <span>Tables</span>
+    </span>
+    <button class="btn">Upload PDF</button>
+    <span class="count">6 tables</span>
+    <span class="pill pill-ok">Borderless tables: full support</span>
+    <button class="btn">Side by side</button>
+    <span class="spacer"></span>
+    <button class="icon-btn">EN / ع</button>
+    <button class="icon-btn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+    </button>
+    <input class="txt" value="du annual 2025 — tables">
+    <button class="btn-primary">Export</button>
+  </header>
+
+  <div class="body">
+    <aside>
+      <div class="barbtns">
+        <button class="btn-accent">+ Select a table</button>
+        <button class="btn">Select all statements</button>
+        <button class="btn">Clear</button>
+      </div>
+      <div class="sidelist">
+        <div class="grouphd">Financial statements</div>
+        <div class="row active">
+          <input type="checkbox" checked="">
+          <div class="row-body">
+            <div class="row-name">Income statement 2024</div>
+            <div class="row-sub">page 133 · 2024/2023 · 38×3</div>
+            <div class="row-meta">
+              <span class="pill pill-ok">✓ foots</span>
+              <span class="hbar"><i style="width:97%;background:var(--ok)"></i></span>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <input type="checkbox" checked="">
+          <div class="row-body">
+            <div class="row-name">Balance sheet 2024</div>
+            <div class="row-sub">page 131 · 2024/2023 · 28×3</div>
+            <div class="row-meta">
+              <span class="pill pill-ok">✓ foots</span>
+              <span class="hbar"><i style="width:90%;background:var(--ok)"></i></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main>
+      <div class="pv-head">
+        <h2>Income statement <span class="where">· 2024</span></h2>
+        <span class="where">page 133</span>
+        <span class="pill pill-ok">✓ foots</span>
+      </div>
+      <div class="card">
+        <div class="card-cap">Extracted table — 6 of 38 rows shown</div>
+        <table class="tbl">
+          <tr class="hdr"><td>AED '000</td><td class="num">2024</td><td class="num">2023</td></tr>
+          <tr><td>Service revenue</td><td class="num">13,882,447</td><td class="num">13,014,220</td></tr>
+          <tr><td>Cost of sales</td><td class="num">(7,214,309)</td><td class="num">(6,802,447)</td></tr>
+          <tr><td>Gross profit</td><td class="num">6,668,138</td><td class="num">6,211,773</td></tr>
+          <tr class="total"><td>Net profit for the year</td><td class="num">2,487,547</td><td class="num">2,306,000</td></tr>
+        </table>
+      </div>
+
+      <div id="compare">
+        <div class="cmp-head">
+          <b>Compare</b>
+          <span class="where">this table vs the same statement in</span>
+          <select><option>etisalat annual 2024.pdf</option></select>
+          <button class="btn">Compare →</button>
+        </div>
+        <div class="cmp-verdict warn">⚠ 1 line restated — 2023 comparative figures differ between filings</div>
+        <table>
+          <thead><tr><th>Line item</th><th>2024 (du)</th><th>2023 (du)</th><th>2023 (etisalat rpt)</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Service revenue</td><td class="num">13,882,447</td><td class="num">13,014,220</td><td class="num">13,014,220</td>
+            </tr>
+            <tr>
+              <td>Cost of sales</td><td class="num">(7,214,309)</td><td class="num">(6,802,447)</td><td class="num">(6,802,447)</td>
+            </tr>
+            <tr class="restated">
+              <td>Gross profit<span class="restated-tag">RESTATED</span></td><td class="num">6,668,138</td><td class="num">6,211,773</td><td class="num">6,187,900</td>
+            </tr>
+            <tr>
+              <td>Net profit for the year</td><td class="num">2,487,547</td><td class="num">2,306,000</td><td class="num">2,306,000</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

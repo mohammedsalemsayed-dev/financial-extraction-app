@@ -340,9 +340,20 @@ def rows_in_box(page_tables, x0, y0, x1, y1, min_overlap_frac=0.5, row_margin=20
     users round outward "to be safe"), which on a dense notes page can
     otherwise drag in a neighbouring note's heading or an unrelated column
     of prose that happens to sit close by:
-      1. `min_overlap_frac` requires a candidate region to be MOSTLY (by
-         default >=50%) covered by the drawn box before it's even considered
-         -- a region only clipped at the edge doesn't qualify on its own.
+      1. `min_overlap_frac` requires a candidate region to substantially
+         overlap the drawn box (by default >=50%) before it's even
+         considered -- checked BOTH ways (overlap as a fraction of the
+         REGION's own area, and as a fraction of the BOX's own area), taking
+         whichever is more generous. Checking region-coverage alone would
+         reject a box the user drew ON PURPOSE to grab only PART of a bigger
+         auto-detected region (e.g. just a table's "Assets" half, leaving
+         "Liabilities" out) -- such a box can legitimately cover under 50%
+         of the region while still being 100% inside it, which is exactly
+         what box-coverage catches. Checking box-coverage alone would accept
+         a tiny sliver of a neighbouring note that happens to fall entirely
+         within a much larger drawn box -- region-coverage catches that.
+         Either check passing is enough; a region only clipped at the edge
+         (failing BOTH) still doesn't qualify on its own.
       2. After merging, rows are trimmed to the drawn box's own Y-range
          (plus a small `row_margin` of slack for an edge that's a few points
          short) -- this is what actually stops a stacked-merge from pulling
@@ -358,6 +369,8 @@ def rows_in_box(page_tables, x0, y0, x1, y1, min_overlap_frac=0.5, row_margin=20
     (see module docstring: a ruled box that only wraps the numbers, with
     labels sitting outside it, is invisible to img2table's own structure
     detection -- it only ever sees the ruled numeric grid)."""
+    box_area = max(1.0, (x1 - x0) * (y1 - y0))
+
     def _overlap_area(r):
         ox = max(0.0, min(r.x1, x1) - max(r.x0, x0))
         oy = max(0.0, min(r.y1, y1) - max(r.y0, y0))
@@ -366,7 +379,7 @@ def rows_in_box(page_tables, x0, y0, x1, y1, min_overlap_frac=0.5, row_margin=20
     def _overlap_frac(r):
         area = _overlap_area(r)
         r_area = max(1.0, (r.x1 - r.x0) * (r.y1 - r.y0))
-        return area / r_area
+        return max(area / r_area, area / box_area)
 
     cands = [r for r in page_tables if _overlap_frac(r) >= min_overlap_frac]
     if not cands:
@@ -396,7 +409,7 @@ def rows_in_box(page_tables, x0, y0, x1, y1, min_overlap_frac=0.5, row_margin=20
     return rows, (best.x0, tight_y0, best.x1, tight_y1), row_bands
 
 
-def ocr_rows_in_box(pdf_path, page_index0, x0, y0, x1, y1, min_confidence=50, pad=6):
+def ocr_rows_in_box(pdf_path, page_index0, x0, y0, x1, y1, min_confidence=1, pad=20):
     """OCR failsafe for a manually-drawn box that has NO extractable text at
     all (a scanned page, or a scanned figure pasted into an otherwise-digital
     report). Only ever called after the real-text path (`rows_in_box` /
@@ -408,6 +421,26 @@ def ocr_rows_in_box(pdf_path, page_index0, x0, y0, x1, y1, min_confidence=50, pa
     a sub-second click instead of a multi-minute whole-document scan -- the
     same "opt-in, page/box at a time" shape as manual mode's real-text path,
     just with Tesseract standing in for the PDF's own text layer.
+
+    `pad` matters a lot more here than it would for real-text extraction: a
+    box drawn tight against the table's true edge (which is exactly what
+    users do when trying to trim out extra whitespace) crops straight through
+    the PIXELS of an edge character -- pdfplumber's word boxes tolerate that
+    fine, but Tesseract reads a clipped digit as a different digit or drops
+    it outright (confirmed live: a box ending 1-2pt past the last column
+    misread "$20,565,087" as "$20,565,C" or dropped the row's tail entirely).
+    20pt of padding gives OCR room to see the whole glyph regardless of how
+    tightly the box itself was drawn.
+
+    `min_confidence` defaults to 1, not img2table's usual 50: Tesseract's
+    per-word confidence on this kind of image is noisy in a way that isn't
+    correlated with correctness -- confirmed live on the same table, same
+    PSM, same run: "2,333,277,000" scored 90 while "$55,483,771,000" right
+    next to it scored 17, both equally correct. A threshold anywhere near 50
+    silently drops cells Tesseract actually read right, and a silently
+    MISSING cell is worse than a low-confidence one -- OCR results already
+    carry the "verify by eye" badge, so a shaky-but-present read a user can
+    glance at and correct beats a gap they might not notice at all.
 
     Returns (rows, bbox, row_bands) shaped exactly like `rows_in_box`'s hit,
     or None. `bbox`/`row_bands` are in the same PDF-point space as every
@@ -429,8 +462,18 @@ def ocr_rows_in_box(pdf_path, page_index0, x0, y0, x1, y1, min_confidence=50, pa
         buf = io.BytesIO()
         crop_im.original.save(buf, format="PNG")
         doc = _Img2TableImage(src=buf.getvalue())
+        # img2table's TesseractOCR defaults to PSM 11 ("sparse text, no
+        # particular order"), which on this kind of tightly-tracked numeric
+        # column splits a single figure into separate low-confidence word
+        # fragments ("2,299,638," + "166", each conf ~6) that then fall
+        # below min_confidence and vanish from the cell entirely -- confirmed
+        # by hand: a figure Tesseract reads fine as ONE token under PSM 4
+        # (conf ~90) reads as two worthless fragments under PSM 11. PSM 4
+        # ("a single column of text of variable sizes") matches this app's
+        # actual documents -- one drawn box, one table -- and doesn't
+        # fragment numbers the same way.
         tables = doc.extract_tables(
-            ocr=_TesseractOCR(lang="eng"), borderless_tables=True,
+            ocr=_TesseractOCR(lang="eng", psm=4), borderless_tables=True,
             implicit_rows=True, implicit_columns=True,
             min_confidence=min_confidence)
     except Exception:
@@ -443,19 +486,121 @@ def ocr_rows_in_box(pdf_path, page_index0, x0, y0, x1, y1, min_confidence=50, pa
     # has the most cells rather than trying to merge/disambiguate several
     best = max(tables, key=lambda t: sum(len(c) for c in t.content.values()))
     row_rows = []
+    col_ranges = []   # [(x1_min, x2_max), ...] per column index, crop-pixel space
     for _, cells in sorted(best.content.items()):
         if not cells:
             continue
         top = cy0 + min(c.bbox.y1 for c in cells) / OCR_PX_PER_PT
         bot = cy0 + max(c.bbox.y2 for c in cells) / OCR_PX_PER_PT
         row_rows.append((top, bot, [c.value for c in cells]))
+        for i, c in enumerate(cells):
+            if i >= len(col_ranges):
+                col_ranges.append((c.bbox.x1, c.bbox.x2))
+            else:
+                lo, hi = col_ranges[i]
+                col_ranges[i] = (min(lo, c.bbox.x1), max(hi, c.bbox.x2))
     if not row_rows:
         return None
     rows = [list(v) for _, _, v in row_rows]
     row_bands = [(top, bot) for top, bot, _ in row_rows]
     bbox = (cx0 + best.bbox.x1 / OCR_PX_PER_PT, cy0 + best.bbox.y1 / OCR_PX_PER_PT,
             cx0 + best.bbox.x2 / OCR_PX_PER_PT, cy0 + best.bbox.y2 / OCR_PX_PER_PT)
+    # a ruled/whitespace-boundaried box that only wraps the NUMBER columns --
+    # with the row labels sitting to its left, inside the user's drawn box
+    # but outside what img2table's own structure detection considered the
+    # table -- is invisible to it, same failure mode as the real-text path
+    # (see extract_all_tables._attach_left_labels' docstring). Recover them
+    # here the OCR way: re-run Tesseract over just the strip to the left of
+    # the detected numeric grid, within the SAME already-rendered crop (no
+    # extra page render needed), and match each word span to its row by Y.
+    label_hits = sum(1 for r in rows if r and isinstance(r[0], str)
+                     and re.search(r"[A-Za-z]{3,}", r[0]))
+    if label_hits < max(2, 0.3 * len(rows)) and best.bbox.x1 > 4:
+        try:
+            labels = _ocr_left_labels(crop_im.original, best.bbox.x1, cx0, cy0,
+                                      [(top, bot) for top, bot, _ in row_rows])
+            rows = [([lb] if lb else [None]) + r for lb, r in zip(labels, rows)]
+        except Exception:
+            LOG.debug("OCR label recovery failed on %s page %s box %s",
+                      pdf_path, page_index0, (x0, y0, x1, y1), exc_info=True)
+    # same story one more time, vertically: a caption/year header row sitting
+    # ABOVE img2table's detected numeric grid (its own top edge -- best.bbox.y1
+    # -- starts at the FIRST DATA row, not the header above it) is invisible
+    # to it for the same reason the label column was -- it only ever sees the
+    # grid it inferred from whitespace gaps between DATA rows, and a header
+    # separated from the body by a ruled line reads as "outside" that grid.
+    # If there's a gap above the first detected row that's roughly one line
+    # tall (not the page title or three rows of unrelated prose above it),
+    # OCR just that strip and, if it yields text in each of the same column
+    # bands the data rows use, prepend it as a header row.
+    gap_pt = row_rows[0][0] - cy0   # first detected row's top minus crop top, in PDF points
+    gap_px = gap_pt * OCR_PX_PER_PT
+    if 6 <= gap_pt <= 55 and col_ranges:
+        try:
+            header = _ocr_header_row(crop_im.original, gap_px, col_ranges, cx0)
+            if header and any(header):
+                rows = [header] + rows
+                row_bands = [(cy0, row_rows[0][0])] + row_bands
+                bbox = (bbox[0], cy0, bbox[2], bbox[3])
+        except Exception:
+            LOG.debug("OCR header recovery failed on %s page %s box %s",
+                      pdf_path, page_index0, (x0, y0, x1, y1), exc_info=True)
     return rows, bbox, row_bands
+
+
+def _ocr_header_row(crop_pil, gap_px, col_ranges, cx0):
+    """OCR the horizontal strip above img2table's detected numeric grid (a
+    year/column-caption row like "1994  1993" living above the ruled line
+    that separates it from the data) and bucket each recovered word into
+    whichever of `col_ranges` (crop-pixel x1/x2 spans, one per data column)
+    it falls under, joining multiple words in the same bucket. Returns a row
+    shaped like the data rows -- [None, col0_text, col1_text, ...] -- or None
+    if nothing usable was found."""
+    strip = crop_pil.crop((0, 0, crop_pil.width, max(1, int(round(gap_px)))))
+    data = _pytesseract.image_to_data(strip, output_type=_pytesseract.Output.DICT)
+    buckets = [[] for _ in col_ranges]
+    for i, txt in enumerate(data["text"]):
+        txt = (txt or "").strip()
+        if not txt:
+            continue
+        cx = data["left"][i] + data["width"][i] / 2
+        for ci, (lo, hi) in enumerate(col_ranges):
+            if lo - 10 <= cx <= hi + 10:
+                buckets[ci].append((data["left"][i], txt))
+                break
+    if not any(buckets):
+        return None
+    cells = [" ".join(t for _, t in sorted(b)) or None for b in buckets]
+    return [None] + cells
+
+
+def _ocr_left_labels(crop_pil, table_x1_px, cx0, cy0, row_bands):
+    """OCR the strip to the left of the detected numeric columns, within the
+    crop image already rendered by the caller (no extra page render), and
+    return one recovered label string (or None) per entry in `row_bands` --
+    the OCR equivalent of extract_all_tables._attach_left_labels, which does
+    the same thing against the PDF's own real text layer."""
+    strip = crop_pil.crop((0, 0, max(1, int(round(table_x1_px))), crop_pil.height))
+    data = _pytesseract.image_to_data(strip, output_type=_pytesseract.Output.DICT)
+    words = []
+    for i, txt in enumerate(data["text"]):
+        txt = (txt or "").strip()
+        if not txt:
+            continue
+        left, top, w, h = (data["left"][i], data["top"][i],
+                           data["width"][i], data["height"][i])
+        words.append({
+            "text": txt,
+            "x0": cx0 + left / OCR_PX_PER_PT,
+            "top": cy0 + top / OCR_PX_PER_PT,
+            "bottom": cy0 + (top + h) / OCR_PX_PER_PT,
+        })
+    out = []
+    for top, bot in row_bands:
+        band = sorted((w for w in words if top - 2 <= w["top"] <= bot + 2),
+                      key=lambda w: w["x0"])
+        out.append(" ".join(w["text"] for w in band).strip() or None)
+    return out
 
 
 def rows_under_heading(page_tables, heading_top, heading_x0, x_lo, x_hi,

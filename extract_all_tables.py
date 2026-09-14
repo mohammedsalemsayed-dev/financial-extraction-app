@@ -40,7 +40,7 @@ from openpyxl.utils import get_column_letter
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tablekit.config import CONFIG, load_config_overrides   # noqa: E402
 from tablekit.parse import (parse_number, coerce_cell as _cell,  # noqa: E402
-                            normspace as _txt, NUM_RE as _NUM_RE)
+                            normspace as _txt, NUM_RE as _NUM_RE, FormattedNumber)
 
 load_config_overrides()
 
@@ -1836,13 +1836,21 @@ def build_workbook(all_tables):
         for i, row in enumerate(rows):
             for cx in range(ncols):
                 val = row[cx] if cx < len(row) else None
-                cell = ws.cell(row=r0 + i, column=cx + 1, value=val)
+                # a cell that carried a currency symbol / '%' the value
+                # itself can't keep (needed as a plain number for footing,
+                # Δ, health) -- write what was actually printed instead of
+                # the bare number, same principle as the browser's own
+                # "fmt" side-channel (see serve.py's _fmt_row).
+                cell_val = val.formatted() if isinstance(val, FormattedNumber) and (val.prefix or val.suffix) else val
+                cell = ws.cell(row=r0 + i, column=cx + 1, value=cell_val)
                 if i <= hi:
                     cell.font = Font(bold=True); cell.fill = HEAD_FILL
                 elif (r0 + i - r0) and (hi + 1 + (i - hi - 1)) in ():
                     pass
-                if isinstance(val, (int, float)):
-                    cell.number_format = "#,##0.00" if isinstance(val, float) else "#,##0"
+                if isinstance(cell_val, (int, float)):
+                    cell.number_format = "#,##0.00" if isinstance(cell_val, float) else "#,##0"
+                    cell.alignment = Alignment(horizontal="right")
+                elif isinstance(val, FormattedNumber):
                     cell.alignment = Alignment(horizontal="right")
             if add_delta and i > hi:
                 a = row[vcols[0]] if vcols[0] < len(row) else None

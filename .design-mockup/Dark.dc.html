@@ -1,0 +1,371 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <style>
+    :root{
+      --bg:#1a2332; --bg-soft:#111827; --fg:#f0ede8; --muted:#9ca8b8; --line:#2d3a4d; --line2:#243247;
+      --accent:#f4b740; --accent-hover:#d4af37; --accent-weak:#3a3222;
+      --navy:#f0ede8;
+      --ok:#6bb845; --ok-bg:#1e2e18; --warn:#f1c40f; --warn-bg:#3a3018;
+      --bad:#ef5350; --bad-bg:#3a1f1f; --none:#6b7280; --radius:9px;
+      --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+      --shadow-md:0 2px 10px rgba(0,0,0,.35),0 1px 2px rgba(0,0,0,.2);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg-soft);color:var(--fg);
+      font:13px/1.55 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      -webkit-font-smoothing:antialiased}
+    a{color:var(--accent)} a:hover{color:var(--accent-hover)}
+    button{font:inherit;cursor:pointer;color:inherit}
+    input{font:inherit;color:inherit}
+
+    .app{display:flex;flex-direction:column;height:900px;width:1440px;overflow:hidden;border-radius:10px;box-shadow:0 1px 0 rgba(30,58,95,.08)}
+
+    /* header */
+    header{display:flex;align-items:center;gap:12px;padding:11px 20px;
+      border-bottom:1px solid var(--line);background:var(--bg);box-shadow:var(--shadow-sm);flex:none}
+    .brand{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:-.02em;font-size:14.5px}
+    .logo-mark{display:flex;align-items:center;justify-content:center;width:26px;height:26px;
+      border-radius:8px;background:var(--accent);flex:none}
+    .spacer{flex:1}
+    .count{color:var(--muted)}
+    .pill{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;
+      display:inline-flex;align-items:center;gap:4px;white-space:nowrap;letter-spacing:.01em}
+    .pill-ok{color:var(--ok);background:var(--ok-bg)}
+    .pill-warn{color:var(--warn);background:var(--warn-bg)}
+    .pill-bad{color:var(--bad);background:var(--bad-bg)}
+    .btn{padding:6px 12px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+      font-weight:500;display:inline-flex;align-items:center;gap:6px}
+    .btn-primary{padding:7px 15px;border:1px solid var(--accent);border-radius:7px;
+      background:var(--accent);color:#fff;font-weight:600;box-shadow:var(--shadow-sm);
+      display:inline-flex;align-items:center;gap:6px}
+    .btn-accent{border:1px solid var(--accent);color:var(--accent);background:var(--accent-weak);
+      font-weight:600;padding:6px 12px;border-radius:7px}
+    .icon-btn{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+      display:flex;align-items:center;justify-content:center}
+    .txt{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);width:180px}
+
+    /* body layout */
+    .body{display:flex;flex:1;min-height:0}
+    aside{width:308px;flex:none;background:var(--bg);border-right:1px solid var(--line);
+      display:flex;flex-direction:column;overflow:hidden}
+    .barbtns{display:flex;gap:6px;padding:8px 11px;border-bottom:1px solid var(--line2);flex-wrap:wrap}
+    .barbtns .btn{font-size:12px;padding:4px 9px}
+    .barbtns .btn-accent{font-size:12px;padding:4px 9px}
+    .sidelist{flex:1;overflow:auto;padding-bottom:8px}
+    .grouphd{padding:14px 15px 5px;font-size:11px;font-weight:600;letter-spacing:.06em;
+      text-transform:uppercase;color:var(--muted)}
+    .row{display:flex;gap:9px;align-items:flex-start;padding:9px 13px;
+      border-left:3px solid transparent}
+    .row.active{background:var(--accent-weak);border-left-color:var(--accent)}
+    .row input[type=checkbox]{margin-top:3px;accent-color:var(--accent);width:15px;height:15px}
+    .row-body{flex:1;min-width:0}
+    .row-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+    .row-sub{color:var(--muted);font-size:12px;margin-top:1px}
+    .row-meta{display:flex;align-items:center;gap:7px;margin-top:6px;flex-wrap:wrap}
+    .hbar{width:56px;height:3px;border-radius:2px;background:var(--line);overflow:hidden;flex:none}
+    .hbar>i{display:block;height:100%}
+    .tray{border-top:1px solid var(--line);background:var(--bg-soft);padding:8px 11px 10px;flex:none}
+    .tray h4{margin:0 0 6px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+    .tray-item{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px}
+    .tray-item .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .tray-item button{border:1px solid var(--line);background:var(--bg);border-radius:5px;
+      width:20px;height:20px;line-height:1;padding:0;color:var(--muted);font-size:11px;
+      display:flex;align-items:center;justify-content:center}
+
+    main{flex:1;min-width:0;padding:20px 24px;overflow:auto;background:var(--bg-soft)}
+    .split{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+    .pv-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+    .pv-head h2{font-size:16px;margin:0;letter-spacing:-.01em}
+    .where{color:var(--muted)}
+    .pgnum{width:48px;padding:3px 5px;border:1px solid var(--line);border-radius:5px;text-align:center}
+    .hint-line{color:var(--muted);font-size:12px;margin:3px 0 12px}
+    .search-box{display:flex;gap:6px;align-items:center;margin:10px 0 12px}
+    .search-box input{flex:1;padding:5px 8px;border:1px solid var(--line);border-radius:6px}
+
+    .card{border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--bg);box-shadow:var(--shadow-sm)}
+    .card-cap{display:flex;align-items:center;gap:10px;padding:8px 13px;
+      border-bottom:1px solid var(--line2);font-size:12px;font-weight:600;color:var(--muted);background:var(--bg-soft)}
+    .mini{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:3px 9px;
+      color:var(--fg);font-size:12px;font-weight:500}
+
+    .pagebox{height:460px;background:#0d1420;position:relative;overflow:hidden}
+    .pdfpage{position:absolute;inset:24px;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.12);
+      padding:28px 26px;font-family:Georgia,"Times New Roman",serif;color:#111}
+    .pdfpage h3{margin:0 0 2px;font-size:14px;font-weight:700}
+    .pdfpage .sub{font-size:9.5px;color:#555;margin-bottom:10px}
+    .pdftable{width:100%;border-collapse:collapse;font-size:9px}
+    .pdftable td{padding:3px 0;border-bottom:1px solid #eee}
+    .pdftable td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .pdftable tr.hd td{font-weight:700;border-bottom:1px solid #999}
+    .pdftable tr.tot td{font-weight:700;border-top:1px solid #333}
+    .selrect{position:absolute;border:2px solid var(--accent);background:rgba(212,175,55,.18);border-radius:2px}
+
+    .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:11px;flex-wrap:wrap}
+    .sheet-in{padding:4px 8px;border:1px solid var(--line);border-radius:6px;width:180px}
+    .toolbar .hint{color:var(--muted);font-size:12px}
+
+    table.tbl{border-collapse:collapse;width:100%;font-size:12px}
+    table.tbl td,table.tbl th{padding:4px 9px;border-bottom:1px solid var(--line2);text-align:left;vertical-align:top}
+    table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+    table.tbl td.delta{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums;font-size:11.5px}
+    table.tbl tr.hdr td{background:var(--line2);font-weight:600}
+    table.tbl tr.total td{font-weight:600;border-top:1.5px solid var(--fg)}
+    table.tbl td.suspect{border-left:2px solid var(--warn);background:var(--warn-bg)}
+    table.tbl td.figbad{border-left:2px solid var(--bad);background:var(--bad-bg)}
+    .delta-pos{color:var(--ok)}
+    .delta-neg{color:var(--bad)}
+  </style>
+</helmet>
+
+<div class="app">
+  <!-- HEADER -->
+  <header>
+    <span class="brand">
+      <span class="logo-mark">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect x="1" y="8" width="3" height="7" rx="1" fill="#fff"></rect>
+          <rect x="6.5" y="4" width="3" height="11" rx="1" fill="#fff"></rect>
+          <rect x="12" y="1" width="3" height="14" rx="1" fill="#fff"></rect>
+        </svg>
+      </span>
+      <span>Tables</span>
+    </span>
+    <button class="btn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6"></path><path d="M4 20h16"></path></svg>
+      Upload PDF
+    </button>
+    <span class="count">1 table</span>
+    <span class="pill pill-ok">Borderless tables: full support</span>
+    <button class="btn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M3 12l4-4M3 12l4 4M21 12l-4-4M21 12l-4 4"></path></svg>
+      Side by side
+    </button>
+    <span class="spacer"></span>
+    <button class="icon-btn">EN / ع</button>
+    <button class="icon-btn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+    </button>
+    <input class="txt" value="du annual 2025 — tables">
+    <button class="btn-primary">Export</button>
+  </header>
+
+  <!-- BODY -->
+  <div class="body">
+    <!-- SIDEBAR -->
+    <aside>
+      <div class="barbtns">
+        <button class="btn-accent">+ Select a table</button>
+        <button class="btn">Select all statements</button>
+        <button class="btn">Clear</button>
+      </div>
+      <div class="sidelist">
+        <div class="grouphd">Manual selections</div>
+        <div class="row active">
+          <input type="checkbox" checked="">
+          <div class="row-body">
+            <div class="row-name">Statement of changes in equity 2024</div>
+            <div class="row-sub">page 134 · 2024/2023 · 27×6</div>
+            <div class="row-meta">
+              <span class="pill pill-ok">✓ foots</span>
+              <span class="hbar"><i style="width:94%;background:var(--ok)"></i></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="grouphd">Financial statements</div>
+        <div class="row">
+          <input type="checkbox" checked="">
+          <div class="row-body">
+            <div class="row-name">Income statement 2024</div>
+            <div class="row-sub">page 133 · 2024/2023 · 38×3</div>
+            <div class="row-meta">
+              <span class="pill pill-ok">✓ foots</span>
+              <span class="hbar"><i style="width:97%;background:var(--ok)"></i></span>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <input type="checkbox">
+          <div class="row-body">
+            <div class="row-name">Balance sheet 2024</div>
+            <div class="row-sub">page 131 · 2024/2023 · 28×3</div>
+            <div class="row-meta">
+              <span class="pill pill-bad">✗ no foot</span>
+              <span class="hbar"><i style="width:68%;background:var(--warn)"></i></span>
+              <span class="pill pill-warn">1⚠</span>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <input type="checkbox">
+          <div class="row-body">
+            <div class="row-name">Cash flow statement 2024</div>
+            <div class="row-sub">page 135 · 2024/2023 · 29×3</div>
+            <div class="row-meta">
+              <span class="pill pill-ok">✓ foots</span>
+              <span class="hbar"><i style="width:91%;background:var(--ok)"></i></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="grouphd">Notes</div>
+        <div class="row">
+          <input type="checkbox" checked="">
+          <div class="row-body">
+            <div class="row-name">8 Intangible assets</div>
+            <div class="row-sub">page 152 · 2024/2023 · 6×5</div>
+            <div class="row-meta">
+              <span class="pill pill-ok">✓ foots</span>
+              <span class="hbar"><i style="width:88%;background:var(--ok)"></i></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="tray">
+        <h4>Export order — 3</h4>
+        <div class="tray-item">
+          <span class="nm">1. Statement of changes in equity 2024</span>
+          <button disabled="">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"></path></svg>
+          </button>
+          <button>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"></path></svg>
+          </button>
+          <button>×</button>
+        </div>
+        <div class="tray-item">
+          <span class="nm">2. Income statement 2024</span>
+          <button>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"></path></svg>
+          </button>
+          <button>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"></path></svg>
+          </button>
+          <button>×</button>
+        </div>
+        <div class="tray-item">
+          <span class="nm">3. 8 Intangible assets</span>
+          <button>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"></path></svg>
+          </button>
+          <button disabled="">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"></path></svg>
+          </button>
+          <button>×</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN SPLIT -->
+    <main>
+      <div class="split">
+        <!-- PICKER PANE -->
+        <div>
+          <div class="pv-head">
+            <h2>Select a table</h2>
+            <span class="where">page <input class="pgnum" value="134"> of 171</span>
+            <button class="btn" style="font-size:12px;padding:4px 9px">‹ Prev</button>
+            <button class="btn" style="font-size:12px;padding:4px 9px">Next ›</button>
+          </div>
+          <div class="search-box">
+            <input placeholder="Search this PDF's text… (press Enter)">
+            <button class="btn" style="font-size:12px;padding:5px 12px">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+              Search
+            </button>
+          </div>
+          <div class="hint-line">Drag a box around the table you want (rows and columns only), then click Extract. You can extract more than one table from the same page.</div>
+          <div class="card">
+            <div class="card-cap">
+              Page 134
+              <span class="spacer"></span>
+              <button class="mini">Actual size</button>
+              <button class="btn-primary" style="padding:5px 12px;font-size:12.5px">Extract this region →</button>
+            </div>
+            <div class="pagebox">
+              <div class="pdfpage">
+                <h3>Consolidated Statement of Changes in Equity</h3>
+                <div class="sub">for the year ended 31 December 2024</div>
+                <table class="pdftable">
+                  <tr class="hd"><td>AED '000</td><td class="num">Share capital</td><td class="num">Share premium</td><td class="num">Other reserves</td><td class="num">Retained earnings</td><td class="num">Total</td></tr>
+                  <tr><td>At 1 January 2024</td><td class="num">4,532,906</td><td class="num">232,332</td><td class="num">2,251,031</td><td class="num">2,226,944</td><td class="num">9,243,213</td></tr>
+                  <tr><td>Net profit for the year</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">2,487,547</td><td class="num">2,487,547</td></tr>
+                  <tr><td>Fair value changes, net of tax</td><td class="num">–</td><td class="num">–</td><td class="num">(557)</td><td class="num">–</td><td class="num">(557)</td></tr>
+                  <tr><td>Actuarial gain, net of tax</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">6,733</td><td class="num">6,733</td></tr>
+                  <tr><td>Total comprehensive income</td><td class="num">–</td><td class="num">–</td><td class="num">(557)</td><td class="num">2,494,280</td><td class="num">2,493,723</td></tr>
+                  <tr><td>Final cash dividend paid</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">(951,910)</td><td class="num">(951,910)</td></tr>
+                  <tr><td>Interim cash dividend paid</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">(906,588)</td><td class="num">(906,588)</td></tr>
+                  <tr class="tot"><td>At 31 December 2024</td><td class="num">4,532,906</td><td class="num">232,332</td><td class="num">2,250,474</td><td class="num">2,862,733</td><td class="num">9,878,445</td></tr>
+                </table>
+              </div>
+              <div class="selrect" style="left:96px;top:200px;width:340px;height:120px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- DETAIL PANE -->
+        <div>
+          <div class="pv-head">
+            <h2>Statement of changes in equity <span class="where">· 2024</span></h2>
+            <span class="where">page 134</span>
+            <span class="pill pill-ok">✓ foots</span>
+            <span class="where">labels 80% · figures 94%</span>
+          </div>
+          <div class="toolbar">
+            <input class="sheet-in" placeholder="sheet name (optional)">
+            <button class="btn" style="font-size:12px;padding:4px 9px">Swap year columns</button>
+            <span class="hint">click a cell to fix it · hover a row for ＋ ✕ ⤶ ⭡ · exports use your version</span>
+          </div>
+          <div class="card">
+            <div class="card-cap">
+              Extracted table — 27 rows
+              <span class="spacer"></span>
+              <span style="color:var(--warn)">amber/red = review</span>
+            </div>
+            <table class="tbl">
+              <tr class="hdr">
+                <td>AED '000</td><td class="num">Share capital</td><td class="num">Share premium</td><td class="num">Retained earnings</td><td class="num">Δ</td><td class="num">Δ%</td>
+              </tr>
+              <tr>
+                <td>At 1 January 2024</td><td class="num">4,532,906</td><td class="num">232,332</td><td class="num">2,226,944</td><td class="delta delta-pos">+2,306,000</td><td class="delta delta-pos">+50.9%</td>
+              </tr>
+              <tr>
+                <td>Net profit for the year</td><td class="num">–</td><td class="num">–</td><td class="num">2,487,547</td><td class="delta delta-pos">+2,487,547</td><td class="delta">—</td>
+              </tr>
+              <tr>
+                <td class="suspect">Fair value changes, net of tax</td><td class="num">–</td><td class="num">–</td><td class="num figbad">(557)</td><td class="delta delta-neg">−557</td><td class="delta">—</td>
+              </tr>
+              <tr>
+                <td>Actuarial gain, net of tax</td><td class="num">–</td><td class="num">–</td><td class="num">6,733</td><td class="delta delta-pos">+6,733</td><td class="delta">—</td>
+              </tr>
+              <tr>
+                <td>Total comprehensive income</td><td class="num">–</td><td class="num">–</td><td class="num">2,494,280</td><td class="delta delta-pos">+2,494,280</td><td class="delta">—</td>
+              </tr>
+              <tr>
+                <td>Final cash dividend paid</td><td class="num">–</td><td class="num">–</td><td class="num">(951,910)</td><td class="delta delta-neg">−951,910</td><td class="delta">—</td>
+              </tr>
+              <tr>
+                <td>Interim cash dividend paid</td><td class="num">–</td><td class="num">–</td><td class="num">(906,588)</td><td class="delta delta-neg">−906,588</td><td class="delta">—</td>
+              </tr>
+              <tr class="total">
+                <td>At 31 December 2024</td><td class="num">4,532,906</td><td class="num">232,332</td><td class="num">2,862,733</td><td class="delta delta-pos">+635,789</td><td class="delta delta-pos">+28.6%</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
