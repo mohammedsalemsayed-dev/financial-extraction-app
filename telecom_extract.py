@@ -2201,7 +2201,7 @@ _BARE_MARKER_RE = re.compile(
 # _strip_note_refs last removed. convert_pdf reads it to re-attach a display
 # "Note" column to the written sheet, AFTER the arithmetic check has run on
 # the clean body.
-_DROPPED_NOTE_COL = {}
+_DROPPED_NOTE_COL: dict[str, str] = {}
 
 
 def _fmt_note_ref(v):

@@ -1,5 +1,12 @@
 # extract_all_tables.py
 
+This is the user-facing reference (what it does, the CLI, the web UI). The
+other docs in this repo, for when you need them: `docs/PIPELINE.md` (how the
+extraction pipeline actually works -- read this first if you're changing
+detection/analysis code), `CHANGELOG.md` (what changed and why, release by
+release), `archive/README.md` (superseded code kept for reference only, not
+part of the running app).
+
 Generic, company-agnostic. Four things:
 
 1. **List** every table in a PDF, with a reading of what each one is.

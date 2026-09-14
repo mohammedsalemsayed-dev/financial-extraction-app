@@ -73,6 +73,7 @@ def test_table_detail_carries_rows_and_verdicts(wired):
     assert d["rows"][1][0] == "Revenue"
     assert len(d["foot_by_col"]) == 2
     assert "value_cols" in d and d["value_cols"] == [1, 2]
+    assert "notes_i18n" in d   # webui.html's per-note translation channel
 
 
 def test_apply_edits_relabels_and_reanalyses(wired):
@@ -131,6 +132,22 @@ def test_reanalyze_parses_cells_server_side(wired):
     rows[2][1] = "(600,000)"                      # typed as an accounting negative string
     d1 = serve.reanalyze("demo.pdf", 1, rows)
     assert d1["rows"][2][1] == -600000
+
+
+def test_edit_one_does_not_accumulate_stale_notes_i18n_across_re_edits():
+    # notes_i18n must be popped in lockstep with notes before re-analysing
+    # (see the comment above the pop in _edit_one) -- otherwise a note from
+    # a PREVIOUS edit lingers in notes_i18n after "notes" itself was
+    # correctly rebuilt, and the two lists -- meant to be paired by index --
+    # drift out of sync.
+    t = _make_tables()[0]
+    t["notes"] = ["stale note from a previous edit"]
+    t["notes_i18n"] = [{"key": "someStaleKey", "vars": {}}]
+    rows = [r[:] for r in t["rows"]]
+    t2 = serve._edit_one(t, {"rows": rows})
+    assert "stale note from a previous edit" not in (t2.get("notes") or [])
+    assert not any(m.get("key") == "someStaleKey" for m in (t2.get("notes_i18n") or []))
+    assert len(t2.get("notes") or []) == len(t2.get("notes_i18n") or [])
 
 
 def test_compare_returns_a_diff(wired, monkeypatch):
@@ -248,6 +265,38 @@ def test_free_port_returns_an_open_port():
     p = serve._free_port(9000)
     with socket.socket() as s:
         s.bind(("127.0.0.1", p))                 # must be bindable == was free
+
+
+# ---- --debug: the diagnostic capture path added after a "breaks after
+# 2-3 runs" report that was never actually diagnosed (see CHANGELOG 0.7.1) --
+def test_debug_state_line_does_not_crash_and_counts_manual_slots_not_just_live_ones(wired, caplog):
+    # tombstoned (deleted) slots stay counted -- that's deliberate: a
+    # count that only reflected LIVE tables would hide the exact kind of
+    # growth (many delete/extract cycles leaving the internal list larger
+    # than what the UI shows) this exists to make visible
+    serve._manual_list("demo.pdf").extend([{"a": 1}, None, {"b": 2}])
+    with caplog.at_level("DEBUG", logger="tablekit.serve"):
+        serve._debug_state_line("/api/table")
+    assert any("manual_tables=3" in r.message for r in caplog.records)
+
+
+def test_cli_parses_debug_port_and_no_browser_flags(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(serve, "run", lambda files, **kw: captured.update(kw, files=files))
+    serve._cli(["report.pdf", "--debug", "--no-browser", "--port", "9999"])
+    assert captured == {"files": ["report.pdf"], "port": 9999,
+                        "open_browser": False, "debug": True}
+
+
+def test_cli_defaults_match_previous_behavior_with_no_flags(monkeypatch):
+    # the old _cli() silently dropped every "--" flag and never passed
+    # port/open_browser/debug at all -- these are the defaults that made
+    # that accidentally look like it worked for the common no-flags case
+    captured = {}
+    monkeypatch.setattr(serve, "run", lambda files, **kw: captured.update(kw, files=files))
+    serve._cli(["report.pdf"])
+    assert captured == {"files": ["report.pdf"], "port": None,
+                        "open_browser": True, "debug": False}
 
 
 # ---- end-to-end HTTP (needs a real PDF) -----------------------------------

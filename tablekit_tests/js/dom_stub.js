@@ -1,6 +1,6 @@
 "use strict";
 // A deliberately loose DOM stub -- NOT a real DOM. Its only job is to let
-// webui.html's inline <script> execute top-to-bottom without throwing (it
+// webui.js execute top-to-bottom without throwing (it
 // wires a handful of element.onclick/.oninput/.addEventListener at parse
 // time), so the PURE logic defined alongside that wiring -- fmt(), t(),
 // kindName(), the i18n dictionary, the risky-table check, etc. -- becomes

@@ -250,6 +250,22 @@ def test_year_reversal_is_noted():
          "page_label": 1, "shape": X.classify(rows)}
     X.analyze(t)
     assert any("year columns may be reversed" in n for n in (t.get("notes") or []))
+    # notes_i18n (webui.html's translated-note channel, see _add_note) must
+    # stay in lockstep with "notes" -- same length, same order, so the
+    # frontend can pair notes[i] with notes_i18n[i] by index
+    notes, notes_i18n = t["notes"], t["notes_i18n"]
+    assert len(notes) == len(notes_i18n)
+    i = next(k for k, n in enumerate(notes) if "may be reversed" in n)
+    assert notes_i18n[i]["key"] == "yearsReversed"
+    assert notes_i18n[i]["vars"] == {"first": 2023, "last": 2024}
+
+
+def test_add_note_keeps_notes_and_notes_i18n_in_lockstep_across_multiple_calls():
+    t = {}
+    X._add_note(t, "segmentalColumns", "columns look like segments...")
+    X._add_note(t, "assetsOnlyIncomplete", "equity / liabilities side incomplete...")
+    assert len(t["notes"]) == len(t["notes_i18n"]) == 2
+    assert [m["key"] for m in t["notes_i18n"]] == ["segmentalColumns", "assetsOnlyIncomplete"]
 
 
 def test_figure_health_thresholds_are_derived_not_fixed():

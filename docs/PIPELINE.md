@@ -55,6 +55,12 @@ PDF ─► extract_region_ocr(pdf, page, bbox)        [extract_all_tables.py -- 
 analyze(t):
    _statement_kind(title, rows)                   income / BS / cash flow / SOCE / note / table
    header row + years                             + year-reversal / segmental notes
+                                                    (fixed-wording notes go through _add_note(),
+                                                    which sends both the English sentence AND a
+                                                    {key,vars} pair in notes_i18n -- webui.html
+                                                    translates the ones it has a key for; most
+                                                    notes are dynamic prose with no key at all
+                                                    and stay English-only, same as reconcile_explain)
    value columns  (+ a note-ref column)
    total / subtotal rows
    foot verdict, PER COLUMN:
@@ -111,6 +117,17 @@ above `_save_session` for why that's safe here specifically. If a session
 file won't load (schema drift, a corrupted write), `_load_session` logs and
 starts that file fresh rather than crashing the server.
 
+The BROWSER side of the commit path (`webui.js`'s `scheduleReanalyze`) is
+what actually triggers `reanalyze()` -> the save above: a 450ms debounce
+after an edit, keyed **per table** (`state.reTimers[n]`), each capturing the
+file it belongs to at scheduling time. Both of those are load-bearing, not
+style -- a single shared timer (there used to be exactly one, `state.
+reTimer`) means editing a second table within the first one's debounce
+window cancels the first one's save outright, silently; not capturing the
+file means a save that outlives a file switch can fire against a table
+number that now means something else in the new file. See
+`tablekit_tests/js/test_webui_logic.js` for both as regression tests.
+
 ## Where to change things
 
 | symptom | look at |
@@ -124,9 +141,9 @@ starts that file fresh rather than crashing the server.
 | two adjacent numbers glued into one cell | `tablekit/img2table_backend.py` `_split_glued_cell` / `_normalize_row_width` |
 | a label has prose in it | `_deprose_labels`, `_desect_labels`; check `label_health` flags it |
 | a threshold needs tuning | `tablekit/config.py` `CONFIG` (or `extract_all_tables.toml`) |
-| the UI | `serve.py` endpoints + `webui.html` (single file) |
+| the UI | `serve.py` endpoints + `webui.html`/`webui.css`/`webui.js` |
 | the highlighted box on the preview page looks wrong | it's derived from the actually-extracted rows, not the drawn input or a heuristic guess -- see `extract_region`'s `shown_bbox` and `rows_in_box`'s docstring |
-| work disappears after a restart / refresh | `serve.py` `_save_session` / `_load_session` (see "Session persistence" above); the UI-only mirror is `webui.html`'s `saveUiState`/`loadUiState` (localStorage) |
+| work disappears after a restart / refresh | `serve.py` `_save_session` / `_load_session` (see "Session persistence" above); the UI-only mirror is `webui.js`'s `saveUiState`/`loadUiState` (localStorage) |
 
 ## Tests
 
@@ -141,11 +158,24 @@ that skip cleanly when the sample PDFs aren't present, same as golden/anchors.
 a throwaway directory for every test (autouse) so the session-autosave added
 alongside manual mode never writes into the real `uploads/.sessions/`.
 
-`tablekit_tests/js/test_webui_logic.js` covers `webui.html`'s PURE logic --
+`test_fixtures.py` runs the full pipeline -- digital-text extraction and the
+OCR failsafe both -- against the two synthetic PDFs under
+`tablekit_tests/fixtures/` (a fabricated company, regenerate with
+`generate_fixtures.py` there). Unlike the real annual reports, these ARE
+committed, so this is the one extraction test that always runs in CI, not
+just locally. `test_parse_number_properties.py` property-tests
+`parse_number`/`coerce_cell` with `hypothesis` -- most importantly, that
+neither ever raises on arbitrary text, since both run on OCR/PDF-extracted
+input this tool never controls.
+
+`tablekit_tests/js/test_webui_logic.js` covers `webui.js`'s PURE logic --
 `fmt()`, `t()`/i18n interpolation, the en/ar key-symmetry check, `kindName()`,
-`isRisky()` -- by running the real inline `<script>` inside a loose DOM stub
-(`dom_stub.js`), not a reimplementation of it and not a real browser. `node
---test tablekit_tests/js/`, zero npm dependencies (Node's own test runner).
+`isRisky()` -- by running the real file inside a loose DOM stub
+(`dom_stub.js`), not a reimplementation of it and not a real browser.
+`node --test tablekit_tests/js/test_webui_logic.js` (the file, not the
+directory -- `node --test tablekit_tests/js/` doesn't discover it at all on
+Node 24, verified; see CHANGELOG.md 0.7.1). Zero npm dependencies (Node's
+own test runner).
 This deliberately does NOT cover rendering, layout, or click-driven flows --
 this project doesn't pull in a browser-automation dependency (Playwright/
 Puppeteer) for that; changes to those are verified by hand in a real browser

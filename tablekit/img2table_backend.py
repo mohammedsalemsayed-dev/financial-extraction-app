@@ -97,7 +97,7 @@ PT_PER_PX = 72.0 / 200.0
 # manual OCR extraction a sub-second click instead of a multi-minute scan.
 OCR_PX_PER_PT = 4.0
 
-_cache = {}   # (pdf_path, page_index0) -> [_Region]  (per-process)
+_cache: "dict[tuple, list[_Region]]" = {}   # (pdf_path, page_index0) -> [_Region]  (per-process)
 
 _LEAK_RE = re.compile(r"[a-z]{3,}\s+[a-z]{3,}\s+[a-z]{3,}\s+[a-z]{3,}\s+[a-z]{3,}", re.I)
 

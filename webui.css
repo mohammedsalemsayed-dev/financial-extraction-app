@@ -1,0 +1,347 @@
+  :root{
+    /* cream / navy / gold, matching the CPI Automation Platform's palette */
+    --bg:#fefdfb; --bg-soft:#f8f7f5; --fg:#1e3a5f; --muted:#6b6257; --line:#e8dcc4; --line2:#f0ede8;
+    --accent:#d4af37; --accent-hover:#c99d32; --accent-weak:#faf3df; --accent-weak-hover:#f3e3b0;
+    --accent-text:#8a6218;
+    --navy:#1e3a5f; --navy-weak:#eef2f7;
+    --ok:#3d7522; --ok-bg:#f0f7ea; --warn:#b45309; --warn-bg:#fffbeb;
+    --bad:#b91c1c; --bad-bg:#fef2f2; --none:#4b5563; --none-bg:#f3f4f6; --radius:9px;
+    --dirty-bg:#fef9c3; --pagebox-bg:#eef0f2;
+    --ok-border:#bbf7d0; --warn-border:#fde68a; --bad-border:#fecaca; --line-hover:#d8dbe0;
+    --shadow-sm:0 1px 2px rgba(30,58,95,.06);
+    --shadow-md:0 2px 10px rgba(30,58,95,.08),0 1px 2px rgba(30,58,95,.05);
+    --shadow-lg:0 8px 28px rgba(30,58,95,.13),0 2px 6px rgba(30,58,95,.06);
+  }
+  :root[data-theme="dark"]{
+    --bg:#1a2332; --bg-soft:#111827; --fg:#f0ede8; --muted:#9ca8b8; --line:#2d3a4d; --line2:#243247;
+    --accent:#f4b740; --accent-hover:#d4af37; --accent-weak:#3a3222; --accent-weak-hover:#4a4030;
+    --accent-text:#f4b740;
+    --navy:#f0ede8; --navy-weak:#243247;
+    --ok:#6bb845; --ok-bg:#1e2e18; --warn:#f1c40f; --warn-bg:#3a3018;
+    --bad:#f16d6a; --bad-bg:#3a1f1f; --none:#a8b3c2; --none-bg:#2d3a4d;
+    --dirty-bg:#3a3018; --pagebox-bg:#0d1420;
+    --ok-border:#3a6b2a; --warn-border:#8a6d1f; --bad-border:#7a2e2e; --line-hover:#3a4a5f;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+    --shadow-md:0 2px 10px rgba(0,0,0,.35),0 1px 2px rgba(0,0,0,.2);
+    --shadow-lg:0 8px 28px rgba(0,0,0,.45),0 2px 6px rgba(0,0,0,.25);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#1a2332; --bg-soft:#111827; --fg:#f0ede8; --muted:#9ca8b8; --line:#2d3a4d; --line2:#243247;
+      --accent:#f4b740; --accent-hover:#d4af37; --accent-weak:#3a3222;
+      --accent-text:#f4b740;
+      --navy:#f0ede8; --navy-weak:#243247;
+      --ok:#6bb845; --ok-bg:#1e2e18; --warn:#f1c40f; --warn-bg:#3a3018;
+      --bad:#f16d6a; --bad-bg:#3a1f1f; --none:#a8b3c2; --none-bg:#2d3a4d;
+      --dirty-bg:#3a3018; --pagebox-bg:#0d1420;
+      --ok-border:#3a6b2a; --warn-border:#8a6d1f; --bad-border:#7a2e2e; --line-hover:#3a4a5f;
+      --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+      --shadow-md:0 2px 10px rgba(0,0,0,.35),0 1px 2px rgba(0,0,0,.2);
+      --shadow-lg:0 8px 28px rgba(0,0,0,.45),0 2px 6px rgba(0,0,0,.25);
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg-soft);color:var(--fg);
+    font:13px/1.55 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  body.lang-ar{font-family:"Cairo","Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  button,input,select{font:inherit;color:inherit}
+  button{cursor:pointer}
+  ::selection{background:var(--accent-weak)}
+
+  /* RTL: mirror the top-level chrome (header, sidebar side, text direction).
+     The picker/canvas/table-grid interior stays LTR-laid-out on purpose --
+     numeric grids, pixel-space box-drawing and financial-statement column
+     order don't meaningfully "flip" and forcing them to would misalign the
+     coordinate math the box-select tool depends on. */
+  html[dir="rtl"] aside{border-right:none;border-left:1px solid var(--line)}
+  html[dir="rtl"] .row{border-left:none;border-right:3px solid transparent}
+  html[dir="rtl"] .row.active{border-right-color:var(--accent)}
+  html[dir="rtl"] .rowctl{direction:ltr}
+
+  header{display:flex;align-items:center;gap:12px;padding:11px 20px;flex-wrap:wrap;
+    border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);
+    z-index:8;box-shadow:var(--shadow-sm)}
+  header .brand{margin:0;font-weight:700;letter-spacing:-.02em;display:flex;align-items:center;gap:8px;
+    font-size:14.5px;color:var(--fg)}
+  header .brand svg{flex:none}
+  .logo-mark{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;
+    border-radius:8px;background:var(--accent);flex:none}
+  .theme-toggle,.lang-toggle{padding:6px 9px;border:1px solid var(--line);border-radius:7px;
+    background:var(--bg);display:inline-flex;align-items:center;justify-content:center;
+    transition:background .12s,border-color .12s}
+  .theme-toggle:hover,.lang-toggle:hover{background:var(--line2)}
+  header .count{color:var(--muted)}
+  header select,header input.txt{padding:6px 9px;border:1px solid var(--line);
+    border-radius:7px;background:var(--bg);max-width:min(38vw,340px);transition:border-color .12s}
+  header select:focus,header input.txt:focus{outline:none;border-color:var(--accent)}
+  header input.txt.small{width:112px}
+  header .spacer{flex:1}
+  .btn{padding:6px 12px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+    font-weight:500;transition:background .12s,border-color .12s,box-shadow .12s}
+  #fileSel{padding:6px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+    color:inherit;font:inherit;font-weight:500;max-width:220px}
+  #fileSel:hover{border-color:var(--line-hover)}
+  .btn:hover{background:var(--line2);border-color:var(--line-hover)}
+  .btn:active{background:var(--line2);box-shadow:inset 0 1px 2px rgba(16,24,40,.08)}
+  .btn:disabled{opacity:.42;cursor:not-allowed;background:var(--bg)}
+  .btn:disabled:hover{background:var(--bg);border-color:var(--line)}
+  .btn-primary{padding:7px 15px;border:1px solid var(--accent);border-radius:7px;
+    background:var(--accent);color:#1a2332;font-weight:600;box-shadow:var(--shadow-sm);
+    transition:background .12s,box-shadow .12s,transform .12s}
+  .btn-primary:hover{background:var(--accent-hover);box-shadow:var(--shadow-md)}
+  .btn-primary:active{transform:translateY(1px)}
+  .btn-primary:disabled{opacity:.4;cursor:not-allowed;box-shadow:none}
+  .btn-accent{border-color:var(--accent);color:var(--accent-text);background:var(--accent-weak);
+    font-weight:600}
+  .btn-accent:hover{background:var(--accent-weak-hover)}
+  .upload-btn{position:relative;overflow:hidden;display:inline-flex;align-items:center}
+  .upload-btn input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}
+  input:disabled,select:disabled{opacity:.42;cursor:not-allowed;background:var(--bg-soft)}
+
+  main{display:flex;height:calc(100vh - 52px);background:var(--bg-soft)}
+  aside{flex:0 0 auto;width:310px;min-width:200px;max-width:70vw;background:var(--bg);
+    border-right:1px solid var(--line);overflow:hidden;display:flex;flex-direction:column}
+  aside .scroll{overflow-y:auto;flex:1;padding-bottom:20px}
+  .splitter{flex:0 0 6px;cursor:col-resize;background:transparent;position:relative}
+  .splitter:hover,.splitter.active{background:var(--accent-weak)}
+  .splitter::after{content:"";position:absolute;left:2px;top:0;bottom:0;width:1px;background:var(--line)}
+  section.preview{flex:1 1 auto;min-width:0;overflow-y:auto;padding:20px 24px 70px}
+  @media (max-width:880px){
+    main{display:block;height:auto}
+    aside{width:auto !important;border-right:none;border-bottom:1px solid var(--line);max-height:44vh}
+    .splitter{display:none}
+    section.preview{height:auto}
+  }
+
+  .barbtns{display:flex;gap:6px;padding:8px 11px;border-bottom:1px solid var(--line2);flex-wrap:wrap}
+  .barbtns .btn{font-size:12px;padding:4px 9px}
+  .grouphd{padding:14px 15px 5px;font-size:11px;font-weight:600;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--muted)}
+  .row{display:flex;gap:9px;align-items:flex-start;padding:9px 13px;border-left:3px solid transparent;
+    cursor:pointer;transition:background .12s,border-color .12s}
+  .row:hover{background:var(--line2)}
+  .row.active{background:var(--accent-weak);border-left-color:var(--accent)}
+  .row input[type=checkbox]{margin-top:2px;accent-color:var(--accent);width:15px;height:15px}
+  .row .body{flex:1;min-width:0}
+  .row .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .name .tag{color:var(--accent-text);font-weight:600;font-size:11px;margin-left:5px}
+  .row .sub{color:var(--muted);font-size:12px;margin-top:1px}
+  .row .meta{display:flex;align-items:center;gap:7px;margin-top:6px;flex-wrap:wrap}
+  .pill{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;
+    display:inline-flex;align-items:center;gap:4px;white-space:nowrap;letter-spacing:.01em}
+  .pill.ok{color:var(--ok);background:var(--ok-bg)}
+  .pill.warn{color:var(--warn);background:var(--warn-bg)}
+  .pill.bad{color:var(--bad);background:var(--bad-bg)}
+  .pill.none{color:var(--none);background:var(--none-bg)}
+  .hbar{flex:1;height:3px;border-radius:2px;background:var(--line);overflow:hidden;max-width:70px}
+  .hbar>i{display:block;height:100%}
+
+  .tray{border-top:1px solid var(--line);background:var(--bg-soft);padding:8px 11px 10px;max-height:30vh;overflow:auto}
+  .tray h2{margin:0 0 6px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+  .tray .item{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px}
+  .tray .item .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tray .item .nm.risky{color:var(--bad)}
+  .tray .item button{border:1px solid var(--line);background:var(--bg);border-radius:5px;
+    width:20px;height:20px;line-height:1;padding:0;color:var(--muted)}
+  .tray .empty{color:var(--muted);font-size:12px}
+
+  .msg{padding:22px 16px;color:var(--muted)}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid var(--line);
+    border-top-color:var(--accent);border-radius:50%;animation:sp .8s linear infinite;
+    vertical-align:-2px;margin-right:8px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .warnbox{margin:11px 13px;padding:9px 11px;border:1px solid var(--warn-border);background:var(--warn-bg);
+    color:var(--warn);border-radius:7px;font-size:12px}
+
+  .empty{color:var(--muted);text-align:center;font-size:13.5px}
+
+  /* landing-page onboarding, styled after the CPI Automation Platform's
+     "How it works" step cards */
+  .onboarding{max-width:680px;margin:8vh auto 0;padding:0 20px}
+  .onb-title{text-align:center;color:var(--navy);font-size:22px;margin:0 0 22px}
+  .onb-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
+  .onb-step{background:var(--bg);border:1px solid var(--line);border-radius:14px;
+    padding:18px 16px;box-shadow:var(--shadow-sm)}
+  .onb-icon{width:40px;height:40px;border-radius:10px;background:var(--accent);
+    display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+  .onb-h{font-weight:700;color:var(--navy);margin-bottom:5px;font-size:14px}
+  .onb-b{color:var(--muted);font-size:12.5px;line-height:1.55}
+
+  .dropzone{max-width:680px;margin:22px auto 0;padding:0 20px}
+  .dz-box{border:2px dashed var(--line);border-radius:14px;background:var(--bg);
+    padding:26px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:8px;
+    transition:border-color .12s,background .12s}
+  .dz-box.dragover{border-color:var(--accent);background:var(--accent-weak)}
+  .dz-icon{width:46px;height:46px;border-radius:12px;background:var(--accent-weak);
+    display:flex;align-items:center;justify-content:center;color:var(--accent-text);flex:none}
+  .dz-h{font-weight:700;color:var(--navy);font-size:14px}
+  .dz-b{color:var(--muted);font-size:12px}
+  .pv-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:3px}
+  .pv-head h2{font-size:16px;margin:0;letter-spacing:-.01em}
+  .pv-head .where{color:var(--muted)}
+  .pv-lines{color:var(--muted);font-size:12px;margin:3px 0 12px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap}
+  .pv-note{margin:0 0 10px;padding:8px 11px;border-radius:7px;font-size:12px;
+    background:var(--warn-bg);border:1px solid var(--warn-border);color:var(--warn)}
+  .pv-consist{margin:0 0 10px;padding:8px 11px;border-radius:7px;font-size:12px}
+  .pv-consist.ok{background:var(--ok-bg);border:1px solid var(--ok-border);color:var(--ok)}
+  .pv-consist.bad{background:var(--bad-bg);border:1px solid var(--bad-border);color:var(--bad)}
+
+  .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:11px;flex-wrap:wrap}
+  .toolbar input.sheet{padding:4px 8px;border:1px solid var(--line);border-radius:6px;width:190px;
+    background:var(--bg);color:var(--fg)}
+  .toolbar .hint{color:var(--muted);font-size:12px}
+  .save-status{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:5px}
+  .save-status.saving::before{content:"";width:7px;height:7px;border-radius:50%;
+    background:var(--warn);flex:none}
+  .save-status.saved{color:var(--ok)}
+  .save-status.saved::before{content:"";width:7px;height:7px;border-radius:50%;
+    background:var(--ok);flex:none}
+  .save-status.save-error{color:var(--bad)}
+
+  /* the PERSISTENT split: picker (left/top) + whatever table you're
+     currently looking at (right/bottom) -- both always present once a file
+     is loaded, arranged by the header's side-by-side/stacked toggle. This
+     is deliberately the ONLY split in the UI now (an earlier version had a
+     second, nested toggle for the original-PDF-vs-extracted-table cards
+     inside the detail pane too -- three-way splits got cramped and the
+     nested toggle confusingly only ever affected ONE of the two views, so
+     it's gone; that inner pair is always stacked now). */
+  .split-region{display:grid;gap:16px;grid-template-columns:1fr;align-items:start}
+  .split-region.side-by-side{grid-template-columns:1fr 1fr}
+  .split-pane{min-width:0;min-height:0}
+  .panes{display:grid;gap:16px}
+  .split-region.side-by-side .pagebox{height:min(50vh,560px)}
+  .split-region.side-by-side .tablebox{height:min(50vh,560px)}
+  /* the old cutoff here was 1100px -- that's WIDER than the sidebar (310px)
+     plus a common 1280/1366px laptop screen, so side-by-side silently did
+     nothing on completely normal window sizes. Only force stacked when the
+     window is genuinely too narrow to split in half at all (matches the
+     point where the sidebar itself collapses, at which point section.preview
+     takes the FULL window width anyway, not window-minus-sidebar). */
+  @media (max-width:620px){
+    .split-region.side-by-side{grid-template-columns:1fr}
+  }
+  .card{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
+    background:var(--bg);box-shadow:var(--shadow-sm)}
+  .card>.cap{display:flex;align-items:center;gap:10px;padding:8px 13px;
+    border-bottom:1px solid var(--line2);font-size:12px;font-weight:600;color:var(--muted);
+    background:var(--bg-soft)}
+  .card>.cap .spacer{flex:1}
+  .card .mini{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:3px 9px;
+    color:var(--fg);font-size:12px;font-weight:500;transition:background .12s}
+  .card .mini:hover{background:var(--line2)}
+  .pagebox{height:42vh;min-height:160px;max-height:90vh;overflow:auto;background:var(--pagebox-bg);
+    text-align:center;resize:vertical}
+  .pagebox img{display:block;margin:0 auto;max-width:100%}
+  .pagebox.actual img{max-width:none}
+  /* picker's own "Actual size" toggle -- overrides the fit-to-width default
+     (max-width:100%;height:auto) on BOTH the image and the box-draw canvas,
+     so fine print is readable/selectable at full native resolution when you
+     need it, with horizontal+vertical scroll instead of a forced shrink.
+     wireCanvas()'s coordinate conversion adapts automatically either way,
+     since it always measures the canvas's actual displayed vs buffer size. */
+  .pagebox.actual .picker-stage img,.pagebox.actual .picker-stage canvas{
+    max-width:none;height:auto}
+
+  /* the picker page fits the pane's width, scaled down WITHOUT distorting
+     aspect ratio -- height:auto on BOTH the img and the canvas (each has its
+     own intrinsic width/height, from the natural image size and from the
+     canvas's width/height attributes) lets the browser compute a matching
+     height for both from the same width constraint, so they stay pixel-
+     aligned with each other. The box-draw math in wireCanvas() converts
+     pointer coordinates (reported in this DISPLAYED size) back to the
+     canvas's own drawing-buffer resolution (the PDF's native render size)
+     before using them for anything -- see toBufferSpace(). */
+  .picker-stage{position:relative;display:inline-block;max-width:100%}
+  .picker-stage img{display:block;max-width:100%;height:auto}
+  .picker-stage canvas{position:absolute;left:0;top:0;max-width:100%;height:auto;
+    cursor:crosshair;touch-action:none}
+  .pv-head input.pgnum{width:48px;padding:3px 5px;border:1px solid var(--line);border-radius:5px;
+    text-align:center;background:var(--bg);color:var(--fg)}
+
+  .extract-toast{display:flex;align-items:center;gap:10px;margin-bottom:11px;padding:8px 11px;
+    border-radius:7px;font-size:12.5px;background:var(--ok-bg);border:1px solid var(--ok-border);color:var(--ok)}
+  .extract-toast b{color:var(--fg)}
+  .extract-toast .btn{padding:3px 9px;font-size:11.5px;color:var(--fg)}
+  .extract-toast .spacer{flex:1}
+  .extract-toast .close{border:none;background:none;color:inherit;cursor:pointer;font-size:15px;
+    line-height:1;padding:0 2px;opacity:.6}
+  .extract-toast .close:hover{opacity:1}
+  .extract-toast.toast-error{background:var(--bad-bg);border-color:var(--bad-border);color:var(--bad)}
+
+  .global-toasts{position:fixed;top:14px;right:16px;z-index:60;display:flex;
+    flex-direction:column;gap:8px;width:min(360px,90vw);pointer-events:none}
+  .global-toasts .extract-toast{margin-bottom:0;box-shadow:var(--shadow-lg);
+    pointer-events:auto;background:var(--bg)}
+  .global-toasts .toast-error{background:var(--bad-bg)}
+
+  .modal-backdrop{position:fixed;inset:0;background:rgba(20,20,30,.35);
+    display:flex;align-items:center;justify-content:center;z-index:70}
+  .modal-box{background:var(--bg);border-radius:12px;box-shadow:var(--shadow-lg);
+    width:min(380px,88vw);padding:18px 20px}
+  .modal-title{font-weight:700;font-size:14.5px;margin-bottom:8px}
+  .modal-body{color:var(--muted);font-size:12.5px;line-height:1.6;margin-bottom:16px;
+    white-space:pre-wrap}
+  .modal-actions{display:flex;justify-content:flex-end;gap:8px}
+  .btn-danger{background:var(--bad);border-color:var(--bad)}
+  .btn-danger:hover{background:#a31313}
+
+  .row-del{flex:none;align-self:center;border:none;background:none;color:var(--muted);
+    cursor:pointer;font-size:15px;line-height:1;padding:2px 6px;border-radius:5px;
+    opacity:0;transition:opacity .1s,background .12s,color .12s}
+  .row:hover .row-del{opacity:1}
+  .row-del:hover{background:var(--bad-bg);color:var(--bad)}
+
+  .quickfind{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .quickfind .chip{padding:4px 10px;border:1px solid var(--line);border-radius:999px;
+    font-size:11.5px;font-weight:500;background:var(--bg);cursor:pointer;transition:background .12s}
+  .quickfind .chip:hover{background:var(--accent-weak);border-color:var(--accent)}
+
+  .search-box{display:flex;gap:6px;align-items:center;margin:2px 0 10px}
+  .search-box input{flex:1;padding:5px 8px;border:1px solid var(--line);border-radius:6px;
+    background:var(--bg);color:var(--fg)}
+  .search-hits{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:7px;margin-bottom:10px}
+  .search-hits .hit{display:flex;gap:8px;align-items:baseline;padding:6px 10px;cursor:pointer;
+    border-bottom:1px solid var(--line2);font-size:12px}
+  .search-hits .hit:last-child{border-bottom:none}
+  .search-hits .hit:hover{background:var(--line2)}
+  .search-hits .hit .pg{font-weight:600;color:var(--accent-text);white-space:nowrap}
+  .search-hits .hit .snip{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .search-hits .hit .cnt{color:var(--muted);white-space:nowrap}
+  .search-hits mark{background:#fde68a;color:inherit;border-radius:2px;padding:0 1px}
+
+  .tablebox{height:50vh;min-height:120px;max-height:90vh;overflow:auto;resize:vertical}
+  table.tbl{border-collapse:collapse;width:100%;font-size:12.5px}
+  table.tbl td,table.tbl th{padding:4px 10px;border-bottom:1px solid var(--line2);
+    text-align:left;vertical-align:top}
+  table.tbl td.rowctl{width:64px;padding:2px 4px;white-space:nowrap;opacity:0;transition:opacity .1s}
+  table.tbl tr:hover td.rowctl{opacity:1}
+  table.tbl td.rowctl button{border:1px solid var(--line);background:var(--bg);border-radius:4px;
+    width:18px;height:18px;line-height:1;padding:0;color:var(--muted);font-size:11px}
+  table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  table.tbl td.delta{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+  table.tbl tr.hdr td{background:var(--line2);font-weight:600}
+  table.tbl tr.total td{font-weight:600;border-top:1.5px solid var(--fg)}
+  table.tbl td.suspect{border-left:2px solid var(--warn);background:var(--warn-bg);cursor:help}
+  table.tbl td.figbad{border-left:2px solid var(--bad);background:var(--bad-bg);cursor:help}
+  table.tbl td[contenteditable]{outline:none}
+  table.tbl td[contenteditable]:focus{background:var(--accent-weak);box-shadow:inset 0 0 0 2px var(--accent)}
+  table.tbl td.dirty{background:var(--dirty-bg)}
+
+  /* compare panel */
+  #compare{margin-top:22px;border-top:1px solid var(--line);padding-top:16px}
+  #compare .cmp-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+  #compare select{padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:inherit}
+  #compare .cmp-verdict{font-size:12px;color:var(--muted);margin-bottom:8px;display:flex;align-items:center;gap:6px;font-weight:600}
+  #compare .cmp-verdict.ok{color:var(--ok)}
+  #compare .cmp-verdict.warn{color:var(--warn)}
+  #compare table{border-collapse:collapse;width:100%;font-size:12px;background:var(--bg);
+    border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  #compare thead th{background:var(--line2);font-weight:600}
+  #compare td,#compare th{padding:5px 9px;border-bottom:1px solid var(--line2);text-align:left}
+  #compare td.num{text-align:right;font-variant-numeric:tabular-nums}
+  #compare tr.restated td{background:var(--bad-bg)}
+  #compare .restated-tag{color:var(--bad);font-size:10.5px;font-weight:700;margin-left:5px}

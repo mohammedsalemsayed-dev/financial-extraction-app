@@ -1,0 +1,13 @@
+# Without this, git's own content-sniffing heuristic decides whether a file
+# is text or binary -- verified (by comparing the staged blob byte-for-byte
+# against the working file) that it happened to guess right for the two
+# fixture PDFs on this commit, but "happened to guess right" isn't a
+# guarantee on a future checkout/recommit, especially with core.autocrlf on
+# (the default on Windows, which is what generated the "LF will be replaced
+# by CRLF" warning that prompted this file). Binary marks it -text -diff,
+# so line-ending normalization never applies to it at all, regardless of
+# what the content-sniffing heuristic would have guessed.
+*.pdf binary
+*.xlsx binary
+*.zip binary
+*.png binary

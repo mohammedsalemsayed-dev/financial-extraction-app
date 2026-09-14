@@ -24,7 +24,7 @@ from pathlib import Path
 LOG = logging.getLogger("tablekit.extract")   # quiet by default; -v / --debug turns it on
 
 try:  # make console output robust on code-page-limited Windows terminals
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
 except Exception:
     pass
 
@@ -55,7 +55,7 @@ try:
     import telecom_extract as _te
     HAVE_RECON = True
 except Exception:
-    _te = None
+    _te = None  # type: ignore[assignment]  # optional dependency: absent-module sentinel
     HAVE_RECON = False
 
 # Second, independent geometry strategy for the same borderless/2-up statements
@@ -70,16 +70,20 @@ except Exception:
     HAVE_IMG2TABLE = False
     HAVE_OCR = False
 
-    def img2table_page_tables(*a, **k):
+    # `*a, **k` deliberately -- these are inert stand-ins, never meant to
+    # validate call shape the way the real functions do (mypy's "conditional
+    # function variants must have identical signatures" is about exactly
+    # that mismatch, which is the point here, not a bug).
+    def img2table_page_tables(*a, **k):  # type: ignore[misc]
         return []
 
-    def ocr_rows_in_box(*a, **k):
+    def ocr_rows_in_box(*a, **k):  # type: ignore[misc]
         return None
 
-    def rows_under_heading(*a, **k):
+    def rows_under_heading(*a, **k):  # type: ignore[misc]
         return None
 
-    def rows_in_box(*a, **k):
+    def rows_in_box(*a, **k):  # type: ignore[misc]
         return None
 
 # ----------------------------------------------------------------- detection ---
@@ -830,6 +834,20 @@ def _years_in(text):
     return out
 
 
+def _add_note(t, key, en_text, **note_vars):
+    """Append one note in TWO parallel forms, always kept in lockstep
+    (same length, same order): `t["notes"]` -- plain English prose, exactly
+    as before this existed, unchanged for the CLI/`--audit`/Excel export --
+    and `t["notes_i18n"]` -- a {key, vars} pair the web UI can look up in
+    its own translation table (see the comment above I18N in webui.html)
+    and render in the active language, falling back to the English string
+    when the key isn't one it recognises. Two lists instead of restructuring
+    "notes" itself so nothing downstream that already reads plain English
+    strings out of it has to change."""
+    t.setdefault("notes", []).append(en_text)
+    t.setdefault("notes_i18n", []).append({"key": key, "vars": note_vars})
+
+
 def analyze(t, page_years=None, doc_years=None):
     """Attach a semantic reading to a table dict (in place); also return it."""
     rows = t["rows"]
@@ -901,10 +919,11 @@ def analyze(t, page_years=None, doc_years=None):
                         hdr_years.append(yy[0])
         if len(hdr_years) >= 2 and hdr_years == sorted(hdr_years):
             # ascending in the header, but we mapped descending
-            t.setdefault("notes", []).append(
+            _add_note(t, "yearsReversed",
                 "year columns may be reversed — the page header lists years "
                 f"oldest-first ({hdr_years[0]}…{hdr_years[-1]}); figures could be "
-                "attributed to the wrong year. Use 'Swap year columns' if so.")
+                "attributed to the wrong year. Use 'Swap year columns' if so.",
+                first=hdr_years[0], last=hdr_years[-1])
 
     # segmental / multi-entity: value-column headers carry entity names, not
     # years -- the columns are not comparable as a time series
@@ -914,7 +933,7 @@ def analyze(t, page_years=None, doc_years=None):
             for c in valcols if c < len(rows[i]) and rows[i][c] is not None)
         wordy = len(re.findall(r"[A-Za-z]{4,}", htext))
         if wordy >= 2 and not re.search(r"AED|USD|['’]000|note", htext, re.I):
-            t.setdefault("notes", []).append(
+            _add_note(t, "segmentalColumns",
                 "columns look like segments / entities, not reporting years — "
                 "the figures across columns may not be a comparable time series.")
 
@@ -1006,7 +1025,7 @@ def analyze(t, page_years=None, doc_years=None):
                     and "total liabilities" not in _all
                     and "total equity and liabilities" not in _all
                     and "current liabilities" not in _all):
-                t.setdefault("notes", []).append(
+                _add_note(t, "assetsOnlyIncomplete",
                     "equity / liabilities side incomplete — only the assets side "
                     "was captured (check the following PDF page for the rest)")
         elif kind == "note" and valcols:
@@ -2150,7 +2169,7 @@ def main():
 
     if args.serve:
         import serve as _srv
-        _srv.run([str(p) for p in gather(args.pdfs, args.recursive)])
+        _srv.run([str(p) for p in gather(args.pdfs, args.recursive)], debug=args.debug)
         return
 
     pdfs = gather(args.pdfs, args.recursive)

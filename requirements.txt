@@ -28,3 +28,5 @@ pytesseract>=0.3
 # dev / tests
 pytest>=8 ; extra == "dev"
 ruff>=0.6 ; extra == "dev"
+mypy>=1.10 ; extra == "dev"
+hypothesis>=6 ; extra == "dev"

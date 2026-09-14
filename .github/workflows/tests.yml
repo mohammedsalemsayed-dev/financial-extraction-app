@@ -9,9 +9,12 @@ on:
       - "tablekit/**"
       - "tablekit_tests/**"
       - "webui.html"
+      - "webui.css"
+      - "webui.js"
       - "run_app.bat"
       - "requirements.txt"
       - "pyproject.toml"
+      - "eslint.config.mjs"
       - ".github/workflows/tests.yml"
   pull_request:
   workflow_dispatch:
@@ -28,32 +31,80 @@ jobs:
       - uses: actions/checkout@v4
       - run: grep -q "serve.py" run_app.bat || (echo "run_app.bat no longer launches serve.py" && exit 1)
 
+  changelog-nudge:
+    # Soft reminder, never a gate: if source that affects users changed but
+    # CHANGELOG.md didn't in the same push, print a CI warning annotation.
+    # Not a hard failure -- not every change (a typo, a comment) earns an
+    # entry, and a false-positive red build here would just train people to
+    # ignore it. push-only: PR merge-commit history doesn't map cleanly to
+    # "the previous commit" the way a direct push's does.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD -- \
+            extract_all_tables.py serve.py webui.html webui.css webui.js tablekit/ run_app.bat 2>/dev/null || true)
+          LOG_CHANGED=$(git diff --name-only HEAD~1 HEAD -- CHANGELOG.md 2>/dev/null || true)
+          if [ -n "$CHANGED" ] && [ -z "$LOG_CHANGED" ]; then
+            echo "::warning::Source changed but CHANGELOG.md didn't -- consider adding an entry. Changed: $(echo "$CHANGED" | tr '\n' ' ')"
+          fi
+
   lint:
-    # Pyflakes only (see pyproject.toml's [tool.ruff.lint] for why) -- real
-    # correctness bugs (unused imports/vars, undefined names), not style.
+    # ruff: pyflakes only (see pyproject.toml's [tool.ruff.lint] for why) --
+    # real correctness bugs (unused imports/vars, undefined names), not
+    # style. mypy: gradual, not strict (see [tool.mypy] for why) -- runs
+    # clean with zero runtime deps installed (verified: ignore_missing_imports
+    # doesn't need the packages actually present, just not to error on their
+    # absence of stubs), so no `pip install -r requirements.txt` needed here.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      - run: pip install ruff mypy
       - run: ruff check extract_all_tables.py serve.py telecom_extract.py tablekit/ tablekit_tests/
+      - run: mypy extract_all_tables.py serve.py telecom_extract.py tablekit/
 
   frontend-logic:
-    # webui.html's PURE logic (i18n lookup/interpolation, number/currency
-    # formatting, the risky-table check) -- runs the real inline <script> in
-    # a DOM stub, not a browser (see tablekit_tests/js/dom_stub.js for why
-    # this project doesn't pull in a browser-automation dependency for
-    # rendering/click coverage instead). Zero npm dependencies: Node's own
-    # built-in test runner.
+    # webui.js's PURE logic (i18n lookup/interpolation, number/currency
+    # formatting, the risky-table check) -- runs the real file in a DOM stub,
+    # not a browser (see tablekit_tests/js/dom_stub.js for why this project
+    # doesn't pull in a browser-automation dependency for rendering/click
+    # coverage instead). Zero npm dependencies: Node's own built-in test
+    # runner. (webui.js used to be an inline <script> in webui.html, needing
+    # an extraction step before either this or ESLint below could run
+    # against it as a real .js file -- split out in 0.7.3, see
+    # CHANGELOG.md, specifically to remove that step.)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: node --test tablekit_tests/js/
+      # Explicit file, NOT `node --test tablekit_tests/js/` (directory-scan
+      # mode): verified locally (two shells, a from-scratch minimal repro
+      # directory, nothing project-specific) that Node 24 doesn't discover
+      # the test file that way at all -- it tries to require() the bare
+      # directory path and fails with MODULE_NOT_FOUND before a single test
+      # runs. This job pins Node 20, unverified here, so relying on
+      # version-sensitive auto-discovery neither shell test could confirm
+      # is exactly the kind of unchecked assumption this fix is about not
+      # making again -- naming the file outright needs no such trust.
+      - run: node --test tablekit_tests/js/test_webui_logic.js
+      # No package.json/node_modules committed -- installed fresh into the
+      # checkout here instead (destroyed with the runner after the job,
+      # same as `pip install` above for Python deps). NOT `npx -p @eslint/js
+      # -p eslint eslint ...`: that resolves the two packages into npx's own
+      # cache, but eslint.config.mjs's `import "@eslint/js"` then fails to
+      # find it (module resolution is relative to the config file's own
+      # location, not npx's cache) -- verified failing locally before
+      # switching to a real local install, which resolves correctly.
+      - run: npm install --no-save eslint@9 @eslint/js@9
+      - run: npx eslint --config eslint.config.mjs webui.js
 
   pytest:
     runs-on: ubuntu-latest
@@ -68,17 +119,44 @@ jobs:
       # requirements.txt now includes img2table/opencv-python-headless/pandas
       # (the second geometry engine + manual box-select's primary path) --
       # CI genuinely exercises that code path, not a fallback-only version of it.
-      - run: pip install -r requirements.txt pytest
+      # pytest/pytest-cov/hypothesis appended explicitly: requirements.txt's
+      # `; extra == "dev"` marker is never auto-activated by a plain
+      # `-r requirements.txt` install (there's no "dev extra" concept for pip
+      # outside an actual package install) -- same reason the lint job's own
+      # `pip install ruff mypy` below doesn't rely on it either.
+      - run: pip install -r requirements.txt pytest pytest-cov hypothesis
 
-      # Pure-logic suites -- no PDFs needed, so these gate every push:
+      # Pure-logic suites -- no REAL-report PDFs needed, so these gate every
+      # push:
       #   test_units.py         analyze / health / cross-year / stitch / cash-flow
       #   test_serve.py         inventory shape / edits / one-workbook export
       #   test_manual_mode.py   img2table_backend region merge/select logic,
       #                         serve.py upload/search/_resolve (the PDF-gated
       #                         parts of this file skip cleanly below)
       #   test_golden.py        the parser + reconcile-explain cases
-      - name: unit + backend tests (no PDFs needed)
-        run: pytest tablekit_tests/test_units.py tablekit_tests/test_serve.py tablekit_tests/test_manual_mode.py -q
+      #   test_fixtures.py      full digital-text + OCR-failsafe extraction,
+      #                         against the two synthetic (fabricated-company)
+      #                         PDFs committed under tablekit_tests/fixtures/
+      #                         -- unlike the 24 real annual reports, these
+      #                         ARE in the repo, so this is CI's one real,
+      #                         non-skipped, end-to-end extraction test. Its
+      #                         OCR-specific cases still skip here (no
+      #                         Tesseract binary on this runner) the same way
+      #                         test_manual_mode.py's do.
+      #   test_parse_number_properties.py   hypothesis-driven: parse_number/
+      #                         coerce_cell never raise on arbitrary text,
+      #                         plus a handful of format-independent
+      #                         properties (round-trips, parens negate, CR/DR,
+      #                         percent) that a fixed example list could
+      #                         easily miss a regression in.
+      # --cov/--cov-append on these two accumulate coverage DATA as a side
+      # effect of tests that already have to run anyway -- no separate full
+      # re-run just to measure it (the previous version of this job ran the
+      # entire suite a 4th time purely for a coverage report). --cov-report=
+      # (empty) suppresses the inline report here; the dedicated step below
+      # prints the combined one, from data only, with no tests to fail.
+      - name: unit + backend + synthetic-fixture tests (no real-report PDFs needed)
+        run: pytest tablekit_tests/test_units.py tablekit_tests/test_serve.py tablekit_tests/test_manual_mode.py tablekit_tests/test_fixtures.py tablekit_tests/test_parse_number_properties.py -q --cov --cov-report=
 
       - name: parser + reconcile-explain cases
         run: pytest tablekit_tests/test_golden.py -q -k "parse_number or reconcile_explain or every_snapshot"
@@ -87,4 +165,20 @@ jobs:
       # PDF-gated cases in test_manual_mode.py, need the 24 report PDFs,
       # which are not committed -- they run locally and skip in CI.
       - name: golden + anchors + PDF-gated manual-mode cases (skip cleanly if PDFs absent)
-        run: pytest tablekit_tests/test_golden.py tablekit_tests/test_manual_mode.py -q
+        run: pytest tablekit_tests/test_golden.py tablekit_tests/test_manual_mode.py -q --cov --cov-append --cov-report=
+
+      # Informational only, genuinely non-blocking this time: reads the
+      # coverage DATA the two steps above already collected (via the
+      # `coverage` CLI directly, not pytest -- zero tests run here, so
+      # continue-on-error can never mask a real test failure) and prints
+      # the combined report. The 24 sample PDFs that exercise most of
+      # extract_all_tables.py/telecom_extract.py's real extraction paths
+      # aren't committed, so CI coverage is always structurally lower than
+      # a local run with them present -- this is for tracking the trend,
+      # not a threshold to fail the build on, and now actually can't.
+      - name: coverage report (informational)
+        if: matrix.python == '3.12'
+        continue-on-error: true
+        # `coverage` (the CLI) comes in as pytest-cov's own dependency --
+        # already installed above, nothing new needed here
+        run: coverage report -m

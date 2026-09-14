@@ -148,6 +148,35 @@ def test_rows_in_box_returns_none_for_an_empty_page():
     assert rows_in_box([], 0, 0, 100, 100) is None
 
 
+def test_rows_in_box_accepts_a_box_drawn_around_only_part_of_a_bigger_region():
+    """The real bug this locks in: a user draws a box around only the
+    "Assets" half of a balance-sheet region, deliberately leaving
+    "Liabilities" out. That box covers well under 50% of the REGION's own
+    area (checking region-coverage alone -- the original, buggy behaviour --
+    would reject it) but effectively 100% of the DRAWN BOX's own area, since
+    the box sits entirely inside the region. `_overlap_frac` must take
+    whichever of the two fractions is more generous, not region-coverage
+    alone, or a deliberately partial selection like this returns nothing."""
+    region = _region(40, 0, 400, 400, [
+        (10, 30, ["Assets", None, None]),
+        (30, 60, ["Cash and equivalents", 500_000, 420_000]),
+        (60, 90, ["Trade receivables", 300_000, 250_000]),
+        (250, 280, ["Liabilities", None, None]),
+        (280, 310, ["Trade payables", 200_000, 180_000]),
+        (310, 340, ["Borrowings", 100_000, 90_000]),
+    ])
+    # drawn box: y=0..150, i.e. the Assets section only -- 150/400 = 37.5%
+    # of the region's area, well under the 50% default min_overlap_frac
+    hit = rows_in_box([region], x0=40, y0=0, x1=400, y1=150)
+    assert hit is not None, "a box covering <50% of the region but ~100% of itself must still match"
+    rows, bbox, row_bands = hit
+    labels = [r[0] for r in rows]
+    assert any("Cash and equivalents" in (l or "") for l in labels)
+    assert not any("Liabilities" in (l or "") for l in labels), (
+        "the deliberately-excluded Liabilities section leaked into a partial selection")
+    assert not any("Borrowings" in (l or "") for l in labels)
+
+
 # ------------------------------------------------- extract_region (PDF) ----
 def _sample_pdf():
     for name in ("du annual 2025.pdf", "du annual 2020.pdf", "du annual 2016.pdf"):
@@ -187,6 +216,19 @@ def test_extract_region_returns_none_for_a_blank_area():
 # when HAVE_OCR is off) and the text-detection check that decides whether the
 # UI even offers the OCR button. Full OCR correctness needs a machine with
 # Tesseract installed and is out of scope for CI.
+def test_ocr_rows_in_box_pad_default_is_20_not_6():
+    """Regression lock, not a live OCR check (that needs the real Tesseract
+    binary + visual inspection, done by hand this session -- see
+    CHANGELOG.md 0.5.0). At pad=6 a tightly-drawn box clipped/misread
+    trailing digits ("$20,565,087" -> "$20,565,C" or worse); pad=20 fixed
+    4 of 5 tightness variants tested live. This just makes sure no future
+    edit quietly reverts the default back down."""
+    import inspect
+    from tablekit import img2table_backend as _i2t
+    sig = inspect.signature(_i2t.ocr_rows_in_box)
+    assert sig.parameters["pad"].default == 20
+
+
 @pytest.mark.skipif(not (ROOT / "du annual 2025.pdf").exists(), reason="sample PDF not present")
 def test_box_has_text_is_true_over_a_real_statement():
     # same box as test_extract_region_soce_full_extraction -- known to have text

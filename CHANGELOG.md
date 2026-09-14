@@ -1,5 +1,162 @@
 # Changelog
 
+## 0.7.4
+
+- **`webui.html` split into `webui.html` (67-line shell) + `webui.css` (347 lines) + `webui.js` (1519 lines)**, served as three separate files (`serve.py` gained two routes, `/webui.css` and `/webui.js`, alongside the existing `/`). Reconsidered rather than assumed: this project has no build step and no bundler, and keeping everything in one file to avoid needing either is itself a legitimate, common, professional choice for a no-build local tool -- splitting isn't automatically "more correct." What tipped it here is concrete, already-paid cost, not a style preference: getting ESLint and `tsc` to check the inline script at all (0.7.1, 0.7.2) needed a dedicated extraction step (`extract_inline_script.mjs`, regexing the `<script>` block out to a temp file) precisely because the JS wasn't a real file. Splitting removes that workaround rather than adding one -- `extract_inline_script.mjs` is deleted, both tools now run directly against `webui.js`. It also wasn't a "the app must still work if you just open the HTML file" concession: every feature already round-trips through `fetch()` to `serve.py`'s `/api/*` endpoints, so the app never worked without the server running regardless of where the JS lived.
+  Extraction and verification were both mechanical and checked, not assumed: the CSS/JS blocks were sliced out by exact line range and diffed byte-for-byte against the original file's content before `webui.html` was touched (both matched exactly), rather than hand-copied. `tablekit_tests/js/test_webui_logic.js` (which used to regex its own inline `<script>` out of `webui.html`) now reads `webui.js` directly -- same 13 tests, all still passing, unmodified test logic. ESLint and `tsc --checkJs` were re-run against the real `webui.js`: 0 lint errors, and the same 16 already-verified-not-bugs `tsc` findings as before the split (confirming the move didn't change a single line of actual code). Re-ran the full pytest suite and did a live server smoke test after -- page load, `/webui.css`/`/webui.js` both 200 with the right `Content-Type`, extraction, export, and a fresh axe-core accessibility pass (0 violations, matching the pre-split state from earlier this version) -- not just "the diff looks right."
+  Updated to match: `CONTRIBUTING.md`, `docs/PIPELINE.md` (a few now-stale "webui.html's X" / "single file" references), `eslint.config.mjs`'s header comment, `.gitignore` (dropped the now-unused `tablekit_tests/js/_webui_inline.js` generated-file entry), and `.github/workflows/tests.yml` (`frontend-logic` job's extraction step removed; `on.push.paths` and the `changelog-nudge` job's file list both gained `webui.css`/`webui.js`).
+
+## 0.7.3
+
+- **`serve.py`'s `do_GET`/`do_POST` were a single long if/elif chain each** (11 and 8 routes) sharing one try/except. Split into one small method per route (`_g_*`/`_p_*`) plus a class-level `GET_ROUTES`/`POST_ROUTES` dict mapping path to method; `do_GET`/`do_POST` now just look up the path and call the mapped handler, with the shared cross-cutting bits (the `_debug_state_line` call, the origin check, the `_NEEDS_FILE` "no file selected" pre-check, the try/except) staying exactly where they were. Behavior-preserving, not a rewrite: every status code, error message and response shape stayed identical -- verified against the full pytest suite (including both real-HTTP-handler tests) before and after, and against a live server smoke test exercising GET (`/`, `/api/files`, `/api/scan`, `/api/table`, `/api/page_raw`, `/api/quickfind`) and POST (`/api/export`) routes with the network tab open, not just assumed from the diff.
+- **Property-based tests for `parse_number`/`coerce_cell`** (`tablekit_tests/test_parse_number_properties.py`, using `hypothesis`): the existing example-based cases in `test_golden.py` lock in specific known formats; this adds properties that hold across inputs no one would think to hand-write -- most importantly, that neither function ever raises on arbitrary text (500 fuzzed examples each), which matters because both run on OCR/PDF-extracted text this tool never controls, where a crash on one bad cell would currently take down the whole extraction rather than just that cell. Also checks: formatting an integer with thousands separators and reparsing recovers it exactly; parens negate a plain positive figure; a `%` suffix doesn't change the underlying numeric value; `CR`/`DR` are exact opposites; and `coerce_cell`'s fast path agrees with `parse_number`'s full parse on everything the fast path actually handles (the two are separately maintained, so this is the check that an edit to one without the other can't silently drift). All 7 passed on the first run against the current implementation -- no bugs found, which is itself the useful result: existing hand-picked examples don't reflect a coincidentally-narrow test, the properties actually hold.
+
+## 0.7.2
+
+- **`serve.py --debug`**: a diagnostic capture path the CLI (`extract_all_tables.py -v`) already had but the server never did. DEBUG-level logging to the console and a `debug.log` file, plus a one-line server-state snapshot (`files=`/`scans=`/`pngs=`/`manual_tables=` counts) logged at the top of every request. Doesn't retroactively explain the unreproduced "breaks after 2-3 runs" report from 0.7.1 -- that stopped happening on its own, root cause still unknown -- but a next occurrence now has a timeline of state growth to look at instead of nothing.
+- **`serve.py`'s CLI silently dropped every flag it didn't recognize**, including `--port` and `--no-browser` -- both documented, neither wired to anything. Replaced the hand-rolled flag-stripping with real `argparse`, which fixed this as a side effect of adding `--debug`.
+- **Caught by the fix above, not by design**: the new per-request state line read `_state["manual"]` directly. Several tests intentionally replace `_state` with a partial dict to stay hermetic (`serve.py` already has a documented convention for this -- `_manual_list`/`_deleted_list` both `.setdefault()` rather than index directly, specifically because "a few tests replace `_state` wholesale with a dict that predates this feature"). The new line didn't follow that convention, so it crashed `do_GET`/`do_POST` -- and therefore any test driving the real HTTP handler -- with `KeyError: 'manual'`. A first verification pass only read the first line of the combined lint+test output and reported success; the failure was in the untruncated tail. Fixed by matching the existing `.get()`-with-default pattern instead of hand-editing the test fixtures to paper over it.
+- **mypy**, gradual/permissive (`ignore_missing_imports`, no `disallow_untyped_defs` -- this codebase has zero type annotations by design, and demanding full coverage would produce thousands of findings on code nobody's touching). Run as-is against the real codebase first: 15 findings, all either a genuinely missing variable annotation (3, now added) or an intentional pattern mypy can't see is deliberate (an optional-dependency None-sentinel, four fallback-stub functions with a loose `*a, **k` signature) -- given a scoped `# type: ignore[<code>]` with a comment explaining why, never a blanket ignore. Wired into the `lint` CI job; verified it also passes with zero runtime dependencies installed, so the job doesn't need the full `requirements.txt` install just to lint.
+- **`renderPreview(n, d)` was called with a silently-discarded 3rd argument at 6 of its 7 call sites** (`renderPreview(n, d, true)` / `(..., false)`) -- found by running `tsc --checkJs` (permissive, no `--strict`) against the extracted inline script for the first time, which flagged "expected 0-2 arguments" at every one. `git log -S` confirms the function has taken exactly 2 parameters since the commit that introduced it (827dfb3) -- this was never a real 3rd parameter that got refactored away, callers were just always passing an extra argument JavaScript quietly drops. Removed the dead argument from all 6 sites; behavior is unchanged (it was never read), but a future reader can no longer mistake it for live control flow. `tsc --checkJs` also surfaced 16 more findings, all verified NOT bugs (an intentional `err.body = j` enrichment on a plain `Error`, plus `document.querySelector(...)` typed as the generic `Element` rather than `HTMLElement` at every `.onclick`/`.focus`/`.dataset` use) -- not wired into CI as a gate, since clearing those honestly needs 16 scattered `@ts-expect-error` casts for zero additional bug-catching value over what this pass already found. One genuinely-loose spot fixed anyway: `localStorage.setItem` was handed a `parseInt(...)` result directly; wrapped in `String(...)` (a no-op at runtime -- `setItem` already coerces -- but now type-clean too).
+- **Two synthetic PDF fixtures** (`tablekit_tests/fixtures/`, generated by `generate_fixtures.py`, a fabricated "Acme Test Holdings, Inc." -- never a real company): a digital-text income statement and a scanned/no-text-layer balance sheet, both built so every subtotal reconciles exactly. Getting them to actually classify and foot correctly took three real fixes, each verified against the live detector rather than assumed: (1) the row-ruling grid needs a line under every row, not just subtotals -- one missing line merges two adjacent line items into one row; (2) `extract_all_tables.py`'s statement-heading regex (`_STMT_RE`) is tuned for IFRS wording ("income statement", "statement of profit or loss") from the du/Etisalat statements this tool was built against -- "CONSOLIDATED STATEMENT OF OPERATIONS" (US GAAP phrasing) matched nothing, "CONSOLIDATED INCOME STATEMENT" does; (3) the year-header row must carry no label text in its own row -- combined with "Year ended December 31," on the same line, its "2024"/"2023" got read back as data-row figures, throwing the reconciliation check off by exactly one year value. Both fixtures now come back `foots: true` end-to-end (CLI, `serve.py`'s live UI, and the OCR failsafe path) -- not asserted, run and read back. New `tablekit_tests/test_fixtures.py` locks this in: CI's first real (non-PDF-gated, non-skipped) extraction test, since these two -- unlike the 24 real annual reports -- are actually committed (`.gitignore` carries a narrow `!tablekit_tests/fixtures/*.pdf` exception to the blanket `*.pdf` rule). Tested against real-world financial statements during development too (Microsoft's and Walmart's public annual reports, alongside the du/Etisalat statements already covered in earlier entries) -- those aren't committed; the synthetic pair covers the same digital-text and OCR cases for CI.
+- **Accessibility audit** (axe-core 4.10, run live against the served app, both themes, every reachable view -- landing/onboarding, page-picker, extracted-table preview, compare panel): 16 real violations found and fixed, not just logged. Highlights: the primary "Extract this region" button had white text on its gold background (1.79:1, should be 4.5:1) -- the single most-used action in the app was nearly unreadable; the search box and page-number input were rendering dark-mode's near-white text color on a plain (never-themed) white input background, making them functionally invisible in dark mode (1.16:1); three status-pill colors (`--none` in both themes, `--bad` in dark, `--ok` in light) fell short of 4.5:1 against their own badge backgrounds; the app had no `<h1>` anywhere and a sidebar heading skipped straight from h1 to h4; five form controls (`#pgNum`, `#fileSel`, `#cmpFile`, `#pgImg`, the per-row checkboxes) had no accessible name at all. Fixed via the existing i18n mechanism where the element was static (`data-i18n-title` already sets both `title` and `aria-label` from one key) or inline `t()` calls where it's rendered dynamically -- no new pattern introduced. New `--accent-text` token added for the 4 spots that render `--accent` as literal text (light theme's `--accent` reads fine as a border/button-fill color but fails contrast as text; dark theme's doesn't need the distinction, so `--accent-text` just equals `--accent` there). Re-verified clean (0 violations) after each fix, in both themes, across every view -- including two false leads run down and ruled out empirically rather than "fixed" on faith: a live theme-toggle occasionally left a pre-existing button's background stuck on the old theme's computed value for 1s+ in this specific automated browser (a fresh page load in the same theme via `localStorage` rendered correctly immediately, and a freshly-created `.btn` element also rendered correctly mid-session -- isolating it to a transition/automation artifact on already-mounted nodes, not a CSS or app bug), and one `region` finding that didn't reproduce on an immediate re-run in the identical state.
+
+## 0.7.1
+
+Four findings from re-auditing 0.7.0 itself, not new source changes --
+all four were cases of asserting something worked without checking.
+
+- **The `frontend-logic` CI job's own test-running step probably never
+  worked.** `node --test tablekit_tests/js/` (directory-scan mode) --
+  verified locally, twice, in two different shells (Git-Bash and native
+  PowerShell, ruling out a shell-specific path-translation artifact), with
+  a minimal from-scratch reproduction directory unrelated to this project:
+  Node 24 doesn't discover the test file that way at all. It tries to
+  `require()` the bare directory path and fails with `MODULE_NOT_FOUND`
+  before a single test runs. This job pins Node 20, which the above
+  couldn't directly confirm either way -- but relying on version-sensitive
+  auto-discovery behavior neither check could fully verify is exactly the
+  unchecked-assumption pattern the other three findings below are also
+  about, so it's fixed the same way: naming the file explicitly
+  (`node --test tablekit_tests/js/test_webui_logic.js`) needs no such
+  trust either way. Every "all N tests pass" claim made across this whole
+  review chain was run directly against that file, never through this
+  directory-mode invocation -- which is exactly how this stayed
+  undiscovered through every prior pass.
+- **CI coverage step didn't do what its own comment said.** Commented
+  "informational only, not a gate" with no `continue-on-error`, so a
+  `pytest-cov` hiccup would still fail the job. Also re-ran the entire
+  suite a 4th time in the same job just to attach `--cov`. Fixed: `--cov`/
+  `--cov-append` ride along on two steps that already have to run, a
+  separate `coverage report -m` step (zero tests, just reads the
+  already-collected data) carries `continue-on-error: true` -- now it
+  actually can't fail the build, instead of merely saying so.
+- **eslint.config.mjs's rule list was asserted "pyflakes-equivalent",
+  unverified.** It was 15 hand-picked rules. Diffed against `@eslint/js`'s
+  real `recommended` config (62 rules) for the first time -- the 47 missing
+  ones (`no-cond-assign`, `no-case-declarations`, `no-dupe-else-if`,
+  `no-async-promise-executor`, `no-unsafe-optional-chaining`, ...) turn out
+  not to fire on this codebase, but nothing had checked that before the
+  claim shipped. Now uses the real `recommended` config directly. (Along
+  the way: `npx -p @eslint/js -p eslint eslint ...` looked like it should
+  work and doesn't -- `import "@eslint/js"` in the config resolves relative
+  to the config file's own location, which npx's package cache doesn't
+  satisfy. Verified failing before switching CI to a real local
+  `npm install --no-save`, which resolves correctly.)
+- **The save-status indicator had a happy-path-only verification, same
+  gap that let the debounce race ship.** Built specifically so a failed
+  autosave is visible instead of silent, confirmed working live, shipped
+  with no automated test of the failure path. Added two: a forced-failure
+  case (asserts the exact `saving` -> `save-error` sequence, that
+  `state.edits[n]` survives so export still works, that the timer handle
+  is cleaned up) and a retry-after-failure case (the next edit actually
+  re-reaches the server and reports `saved`, not silently swallowed).
+  Writing them surfaced one more thing, not fixed here: if `renderPreview`
+  itself throws after a successful save (it would, on a malformed detail
+  object -- never happens with a real server response, only hit this
+  building the test with a deliberately minimal fake one), the error
+  handling reports `save-error` even though the save itself succeeded.
+  Real server responses are always complete, so low priority, but it's a
+  misleading message in that edge case, worth knowing about.
+
+## 0.7.0
+
+Closing out the remaining items from the last two review passes.
+
+### Regression tests for last session's two extraction bugs
+Both fixes (rows_in_box's region/box overlap logic, OCR pad=20) were only
+ever verified live, by hand -- now locked in: a synthetic-region test for a
+box deliberately drawn around only part of a bigger table (the balance-sheet
+"Assets only" case that motivated the fix), and a signature-default test
+that fails if `ocr_rows_in_box`'s `pad` is ever quietly reverted to 6.
+
+### Coverage measurement
+`pytest-cov` wired into CI as an informational report (not a gate -- the 24
+sample PDFs that exercise most of the real extraction path aren't committed,
+so CI coverage is structurally lower than a local run and not a fair
+threshold to fail the build on).
+
+### ESLint
+`eslint.config.mjs` (pyflakes-equivalent rules only, same reasoning as
+ruff's scoped ruleset) + `tablekit_tests/js/extract_inline_script.mjs` to
+pull webui.html's inline `<script>` out to a plain .js file first (ESLint
+lints .js, not HTML). Resolved via `npx` in CI, no package.json/node_modules
+committed. Found and removed real dead code: a duplicate unused constant
+(`PREVIEW_SCALE`, a copy-paste of `PICKER_SCALE` that nothing ever read), an
+unused local in `boot()`, and a vestigial unused parameter on `undoLastEdit`
+left over from writing it.
+
+### Session-save calls, centralized
+Every function that mutates a file's manual-table list now autosaves via
+one `@_autosaves` decorator instead of a bare `_save_session(name)` call
+copy-pasted into five separate function bodies -- a sixth mutating endpoint
+added later can't as easily forget it now.
+
+### A real silent-failure gap, found by audit
+`showPicker()` cached a failed page-count fetch as `pageCount = 1`,
+permanently (it only fetches once per file) -- silently capping a 171-page
+report's picker at page 1 for the rest of the session, with "Next" actually
+DISABLED (`page >= pageCount`) and no error shown anywhere. Fixed: on
+failure it now shows an error toast and leaves the count unset so the next
+attempt retries, instead of locking in a wrong answer. (Audited every other
+silently-swallowed error in webui.html while at it -- the rest are all
+deliberate, documented, non-critical localStorage/decorative-info fallbacks.)
+
+### Compare-verdict-style i18n for the three fixed-wording table notes
+`extract_all_tables.py`'s `analyze()` generates exactly three notes with
+fixed wording (a year-reversal warning, a segmental-columns warning, an
+assets-only-incomplete warning) among many that are fully dynamic prose
+(reconcile-explain's worked arithmetic, etc.) -- small enough to do safely,
+unlike localizing server-generated text in general (still a separate,
+larger project -- see the comment above I18N in webui.html). `_add_note()`
+sends each of those three in two lockstep forms: the English sentence
+exactly as before (`notes`, unchanged for the CLI/Excel export) and a
+`{key, vars}` pair (`notes_i18n`) webui.html translates when it recognises
+the key, falling back to the English text otherwise -- including for the
+many notes that were never given a key at all.
+
+## 0.6.1
+
+### Autosave race that could silently drop an edit
+- `webui.html`'s debounced commit-to-server used ONE shared timer
+  (`state.reTimer`) for every table. Editing table B within table A's 450ms
+  debounce window cancelled A's pending save outright -- silently, with
+  `state.edits[100002]` (etc.) still showing A as "edited" in the browser
+  the whole time. Reproduced live before the fix (A's edit never reached
+  the server; after, both land independently) and locked in as two node
+  regression tests. Fixed: `state.reTimers` keyed per table.
+- Fixing that naively (a timer per table, nothing else) opens a worse hole:
+  if the user switches to a DIFFERENT FILE while a save is still pending,
+  `state.edits` gets wiped by `loadFile()` and the same table number can
+  mean an unrelated table in the new file -- firing the stale save there
+  would be silent cross-file corruption, not just a dropped edit.
+  `scheduleReanalyze` now captures `file` at scheduling time and no-ops if
+  the active file has changed by the time the timer fires.
+- Added a small save-status indicator ("Saving…" / "● Saved" / an error
+  state) next to the edit toolbar, so a save landing (or failing) is
+  something the user can actually see instead of a change that's either
+  silently there or silently isn't.
+
 ## 0.6.0
 
 ### Session persistence -- the big one

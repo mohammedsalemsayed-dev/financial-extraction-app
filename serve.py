@@ -13,6 +13,7 @@ Local only.  No document bytes leave the machine.  Digital-text PDFs only.
 from __future__ import annotations
 
 import base64
+import functools
 import io
 import json
 import logging
@@ -24,6 +25,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse, parse_qs
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -35,12 +37,35 @@ import extract_all_tables as X  # noqa: E402
 from tablekit.parse import FormattedNumber  # noqa: E402
 
 HTML = ROOT / "webui.html"
+WEBUI_CSS = ROOT / "webui.css"
+WEBUI_JS = ROOT / "webui.js"
 LOG = logging.getLogger("tablekit.serve")
 UPLOAD_DIR = ROOT / "uploads"
 SESSION_DIR = UPLOAD_DIR / ".sessions"
 
 STMT = ("income statement", "statement of financial position",
         "statement of cash flows", "statement of changes in equity")
+
+
+def _debug_state_line(path):
+    """One-line snapshot of server-side state size (DEBUG level only -- a
+    no-op cost when logging isn't enabled), logged at the top of every
+    request. A user-reported "breaks after 2-3 runs" issue (see CHANGELOG
+    0.7.1) was never actually diagnosed -- it stopped happening, but no one
+    knows which fix did it or whether something like it could recur. This
+    doesn't retroactively explain that one, but it means a NEXT occurrence
+    has a timeline of state growth to look at (a cache that isn't supposed
+    to grow unbounded, a manual-table count that doesn't match what the UI
+    shows) instead of nothing. Enable with `python serve.py --debug`."""
+    with _lock:
+        # .get(), not [...]: same reason as _manual_list/_deleted_list below
+        # -- a few tests replace `_state` wholesale with a partial dict.
+        n_scans = len(_state.get("scans", {}))
+        n_pngs = len(_state.get("pngs", {}))
+        n_manual = sum(len(v) for v in _state.get("manual", {}).values())
+        n_files = len(_state.get("files", []))
+    LOG.debug("%s  [state: files=%d scans=%d pngs=%d manual_tables=%d]",
+              path, n_files, n_scans, n_pngs, n_manual)
 
 # manual (user-drawn-box) tables live in a separate per-file list so they
 # never collide with the auto-detect scan's own 1-based numbering -- a
@@ -49,7 +74,7 @@ STMT = ("income statement", "statement of financial position",
 # to look in (see `_resolve`).
 MANUAL_OFFSET = 100000
 
-_state = {
+_state: dict[str, Any] = {
     "files": [],                 # list[Path]
     "pages": None,               # optional page range (0-based) applied to every scan
     "scans": {},                 # name -> {"mtime": float, "tables": [...], "warn": [...]}
@@ -85,6 +110,25 @@ def _save_session(name):
         tmp.replace(_session_path(name))          # atomic on the same filesystem
     except Exception:
         LOG.exception("could not save session for %s", name)
+
+
+def _autosaves(fn):
+    """Decorates every function that mutates a file's manual-table list
+    (extract_region, extract_region_ocr, delete_manual, undelete_manual,
+    reanalyze) so it autosaves on the way out -- centralized here instead of
+    a bare `_save_session(name)` call at the end of each function body, so a
+    NEW mutating endpoint added later can't silently forget it (that used to
+    be a real, easy-to-miss risk: five separate call sites, no enforcement).
+    `name` is always the wrapped function's first positional argument.
+    Skipped entirely if the function raises -- a failed/no-op mutation
+    (e.g. delete_manual's KeyError on an already-gone table) has nothing new
+    to save."""
+    @functools.wraps(fn)
+    def wrapper(name, *args, **kwargs):
+        result = fn(name, *args, **kwargs)
+        _save_session(name)
+        return result
+    return wrapper
 
 
 def _load_session(name):
@@ -161,6 +205,7 @@ def _edit_one(t, e):
         t2["title"] = e["title"]
         t2["_sheet_name"] = e["title"]
     t2.pop("notes", None)
+    t2.pop("notes_i18n", None)   # kept in lockstep with "notes" -- see _add_note
     X.analyze(t2, doc_years=([max(t2["years"]), max(t2["years"]) - 1]
                              if t2.get("years") else None))
     X._attach_health(t2)
@@ -220,6 +265,7 @@ def _resolve(name, n):
     raise KeyError(n)
 
 
+@_autosaves
 def delete_manual(name, n):
     """Remove a manually-extracted table. Tombstones (sets to None) rather
     than removing from the list, so every OTHER manual table's "n" (which
@@ -237,9 +283,9 @@ def delete_manual(name, n):
             raise KeyError(n)
         _deleted_list(name).append((idx, manual[idx]))
         manual[idx] = None
-    _save_session(name)
 
 
+@_autosaves
 def undelete_manual(name):
     """Restore the most recently deleted table for this file, if any.
     Returns the restored table's app-wide "n", or None if there was nothing
@@ -252,7 +298,6 @@ def undelete_manual(name):
             if 0 <= idx < len(manual) and manual[idx] is None:
                 manual[idx] = table
                 n = MANUAL_OFFSET + idx + 1
-                _save_session(name)
                 return n
             # slot no longer empty (shouldn't normally happen -- new
             # extractions always append, never reuse a cleared index) --
@@ -395,6 +440,7 @@ def upload_pdf(filename, data_b64):
     return dest.name
 
 
+@_autosaves
 def extract_region(name, page1, bbox, title=None):
     path = _path(name)
     if path is None:
@@ -406,10 +452,10 @@ def extract_region(name, page1, bbox, title=None):
         manual = _manual_list(name)
         manual.append(t)
         idx = len(manual)
-    _save_session(name)
     return _detail(t, MANUAL_OFFSET + idx)
 
 
+@_autosaves
 def extract_region_ocr(name, page1, bbox, title=None):
     path = _path(name)
     if path is None:
@@ -421,7 +467,6 @@ def extract_region_ocr(name, page1, bbox, title=None):
         manual = _manual_list(name)
         manual.append(t)
         idx = len(manual)
-    _save_session(name)
     return _detail(t, MANUAL_OFFSET + idx)
 
 
@@ -445,6 +490,7 @@ def _pill(t):
         "foot_detail": t.get("foot_detail", ""),
         "foot_by_col": t.get("foot_by_col") or [],
         "notes": t.get("notes") or [],
+        "notes_i18n": t.get("notes_i18n") or [],
         "consistency": t.get("consistency"),
         "health": h.get("score"),
         "health_labels": h.get("labels"),
@@ -508,6 +554,7 @@ def _detail(t, n):
         "foots": t.get("foots"), "foot_detail": t.get("foot_detail", ""),
         "foot_by_col": t.get("foot_by_col") or [],
         "notes": t.get("notes") or [],
+        "notes_i18n": t.get("notes_i18n") or [],
         "consistency": t.get("consistency"),
         "edited": bool(t.get("_edited")),
         "ocr": bool(t.get("_ocr")),
@@ -527,6 +574,7 @@ def table_detail(name, n):
     return _detail(_resolve(name, n), n)
 
 
+@_autosaves
 def reanalyze(name, n, rows, title=None):
     """Apply an in-progress edit (raw cells) and return a fresh detail dict --
     verdicts / health recomputed by the engine, cells parsed by the engine.
@@ -535,7 +583,10 @@ def reanalyze(name, n, rows, title=None):
     stays transient, same as before) and flushes it to disk, so the edit
     survives a page refresh or a server restart, not just the final export.
     The browser already debounces calls here (450ms after the user stops
-    typing), so each commit represents a real pause, not a keystroke."""
+    typing), so each commit represents a real pause, not a keystroke.
+    @_autosaves fires regardless of whether `n` actually addressed a manual
+    table -- harmless: _save_session just re-snapshots current (unchanged)
+    state on the test-only auto-scan branch."""
     base = _resolve(name, n)
     t2 = _edit_one(base, {"rows": rows, "title": title})
     if n > MANUAL_OFFSET:
@@ -544,7 +595,6 @@ def reanalyze(name, n, rows, title=None):
             manual = _manual_list(name)
             if 0 <= idx < len(manual) and manual[idx] is not None:
                 manual[idx] = t2
-        _save_session(name)
     return _detail(t2, n)
 
 
@@ -625,126 +675,168 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # ---- GET routes: each takes (self, q) where q = parse_qs(query string) ----
+    def _g_root(self, q):
+        return self._send(200, HTML.read_text(encoding="utf-8"), "text/html; charset=utf-8")
+
+    def _g_css(self, q):
+        return self._send(200, WEBUI_CSS.read_text(encoding="utf-8"), "text/css; charset=utf-8")
+
+    def _g_js(self, q):
+        return self._send(200, WEBUI_JS.read_text(encoding="utf-8"),
+                          "text/javascript; charset=utf-8")
+
+    def _g_files(self, q):
+        with _lock:
+            return self._send(200, {"files": [p.name for p in _state["files"]]})
+
+    def _g_status(self, q):
+        return self._send(200, {"img2table": X.HAVE_IMG2TABLE, "ocr": X.HAVE_OCR})
+
+    def _g_scan(self, q):
+        return self._send(200, inventory(q["file"][0]))
+
+    def _g_table(self, q):
+        return self._send(200, table_detail(q["file"][0], int(q["n"][0])))
+
+    def _g_page(self, q):
+        # cap raised from 3.0 -> 4.5 (72*4.5 = 324 DPI) so the preview can
+        # actually render sharp on a high-DPI/retina display when the client
+        # asks for scale*devicePixelRatio -- 3.0 (216 DPI) was the ceiling
+        # even on a 1x display asking for "sharp"
+        scale = max(1.0, min(float(q.get("scale", ["2"])[0]), 4.5))
+        return self._send(200, page_png(q["file"][0], int(q["n"][0]), scale), "image/png")
+
+    def _g_pagecount(self, q):
+        return self._send(200, {"pages": page_count(q["file"][0])})
+
+    def _g_page_raw(self, q):
+        scale = max(1.0, min(float(q.get("scale", ["2"])[0]), 4.5))
+        return self._send(200, page_raw_png(q["file"][0], int(q["n"][0]), scale,
+                                            q.get("hl", [""])[0]), "image/png")
+
+    def _g_search(self, q):
+        return self._send(200, {"hits": search_pdf(q["file"][0], q.get("q", [""])[0])})
+
+    def _g_quickfind(self, q):
+        return self._send(200, {"hits": quick_find_statements(q["file"][0])})
+
+    GET_ROUTES = {
+        "/": _g_root, "/index.html": _g_root,
+        "/webui.css": _g_css, "/webui.js": _g_js,
+        "/api/files": _g_files, "/api/status": _g_status,
+        "/api/scan": _g_scan, "/api/table": _g_table,
+        "/api/page": _g_page, "/api/pagecount": _g_pagecount,
+        "/api/page_raw": _g_page_raw, "/api/search": _g_search,
+        "/api/quickfind": _g_quickfind,
+    }
+
     def do_GET(self):
+        _debug_state_line(self.path)
         u = urlparse(self.path)
-        q = parse_qs(u.query)
-        try:
-            if u.path in ("/", "/index.html"):
-                return self._send(200, HTML.read_text(encoding="utf-8"),
-                                  "text/html; charset=utf-8")
-            if u.path == "/api/files":
-                with _lock:
-                    return self._send(200, {"files": [p.name for p in _state["files"]]})
-            if u.path == "/api/status":
-                return self._send(200, {"img2table": X.HAVE_IMG2TABLE, "ocr": X.HAVE_OCR})
-            if u.path == "/api/scan":
-                return self._send(200, inventory(q["file"][0]))
-            if u.path == "/api/table":
-                return self._send(200, table_detail(q["file"][0], int(q["n"][0])))
-            if u.path == "/api/page":
-                # cap raised from 3.0 -> 4.5 (72*4.5 = 324 DPI) so the preview
-                # can actually render sharp on a high-DPI/retina display when
-                # the client asks for scale*devicePixelRatio -- 3.0 (216 DPI)
-                # was the ceiling even on a 1x display asking for "sharp"
-                scale = max(1.0, min(float(q.get("scale", ["2"])[0]), 4.5))
-                return self._send(200, page_png(q["file"][0], int(q["n"][0]), scale),
-                                  "image/png")
-            if u.path == "/api/pagecount":
-                return self._send(200, {"pages": page_count(q["file"][0])})
-            if u.path == "/api/page_raw":
-                scale = max(1.0, min(float(q.get("scale", ["2"])[0]), 4.5))
-                return self._send(200, page_raw_png(q["file"][0], int(q["n"][0]), scale,
-                                                    q.get("hl", [""])[0]),
-                                  "image/png")
-            if u.path == "/api/search":
-                hits = search_pdf(q["file"][0], q.get("q", [""])[0])
-                return self._send(200, {"hits": hits})
-            if u.path == "/api/quickfind":
-                return self._send(200, {"hits": quick_find_statements(q["file"][0])})
+        handler = self.GET_ROUTES.get(u.path)
+        if handler is None:
             return self._send(404, {"error": "not found"})
+        try:
+            return handler(self, parse_qs(u.query))
         except KeyError:
             return self._send(404, {"error": "unknown file"})
         except Exception as e:
             LOG.exception("GET %s failed", self.path)
             return self._send(500, {"error": f"{type(e).__name__}: {e}"})
 
+    # ---- POST routes: each takes (self, payload) -- the parsed JSON body.
+    # Endpoints in _NEEDS_FILE get a shared "no file selected" 400 (below,
+    # before dispatch) instead of each repeating the same check; /api/compare
+    # has its own two-file version of that check since its payload shape
+    # (a/b) doesn't fit the shared one-file check. ----
+    def _p_export(self, payload):
+        data, fn = export_xlsx(payload["file"], [int(x) for x in payload["ns"]],
+                               payload.get("edits"))
+        return self._send(
+            200, data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            {"Content-Disposition": f'attachment; filename="{fn}"'})
+
+    def _p_reanalyze(self, payload):
+        return self._send(200, reanalyze(
+            payload["file"], int(payload["n"]), payload["rows"], payload.get("title")))
+
+    def _p_compare(self, payload):
+        if not payload.get("a") or not payload.get("b") \
+                or _path(payload["a"]) is None or _path(payload["b"]) is None:
+            return self._send(400, {"error": "No file selected -- upload a PDF first."})
+        return self._send(200, compare(
+            payload["a"], int(payload["na"]), payload["b"], int(payload["nb"])))
+
+    def _p_upload(self, payload):
+        return self._send(200, {"file": upload_pdf(payload.get("filename"), payload["data_b64"])})
+
+    def _p_extract_region(self, payload):
+        bbox = [float(v) for v in payload["bbox"]]
+        d = extract_region(payload["file"], int(payload["page"]), bbox, payload.get("title"))
+        if d is None:
+            no_text = not region_has_text(payload["file"], int(payload["page"]), bbox)
+            return self._send(422, {
+                "error": ("No text found in that box." if no_text else
+                          "No table found in that box -- try drawing it tighter "
+                          "around just the table's rows and columns."),
+                "no_text": no_text, "ocr_available": X.HAVE_OCR})
+        return self._send(200, d)
+
+    def _p_extract_region_ocr(self, payload):
+        d = extract_region_ocr(payload["file"], int(payload["page"]),
+                               [float(v) for v in payload["bbox"]], payload.get("title"))
+        if d is None:
+            return self._send(422, {"error": "OCR found nothing table-like in that box."})
+        return self._send(200, d)
+
+    def _p_delete_manual(self, payload):
+        try:
+            delete_manual(payload["file"], int(payload["n"]))
+        except KeyError:
+            return self._send(404, {"error": "that table is already gone"})
+        return self._send(200, inventory(payload["file"]))
+
+    def _p_undelete_manual(self, payload):
+        n = undelete_manual(payload["file"])
+        if n is None:
+            return self._send(404, {"error": "nothing to undo"})
+        inv = inventory(payload["file"])
+        inv["restored_n"] = n
+        return self._send(200, inv)
+
+    POST_ROUTES = {
+        "/api/export": _p_export, "/api/reanalyze": _p_reanalyze, "/api/compare": _p_compare,
+        "/api/upload": _p_upload, "/api/extract_region": _p_extract_region,
+        "/api/extract_region_ocr": _p_extract_region_ocr,
+        "/api/delete_manual": _p_delete_manual, "/api/undelete_manual": _p_undelete_manual,
+    }
+    # every one of these needs a real, already-uploaded file -- catch "no
+    # file selected yet" with one clear message instead of a bare KeyError
+    # leaking to the browser (reachable from the UI: every sidebar control
+    # used to be clickable before a file was ever chosen)
+    _NEEDS_FILE = {"/api/reanalyze", "/api/extract_region", "/api/extract_region_ocr",
+                  "/api/export", "/api/delete_manual", "/api/undelete_manual"}
+
     def do_POST(self):
+        _debug_state_line(self.path)
         u = urlparse(self.path)
         # reject cross-origin POSTs -- this is an open localhost endpoint that
         # reads/writes files; only our own page (or a no-Origin client) may post
         origin = self.headers.get("Origin")
         if origin and urlparse(origin).hostname not in ("127.0.0.1", "localhost"):
             return self._send(403, {"error": "cross-origin POST refused"})
+        handler = self.POST_ROUTES.get(u.path)
+        if handler is None:
+            return self._send(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length) or b"{}")
-            # every mutating endpoint below needs a real, already-uploaded
-            # file -- catch "no file selected yet" with one clear message
-            # instead of a bare KeyError leaking to the browser (this is
-            # reachable from the UI: every sidebar control used to be
-            # clickable before a file was ever chosen)
-            if u.path in ("/api/reanalyze", "/api/extract_region", "/api/extract_region_ocr",
-                         "/api/export", "/api/delete_manual", "/api/undelete_manual"):
+            if u.path in self._NEEDS_FILE:
                 name = payload.get("file")
                 if not name or _path(name) is None:
                     return self._send(400, {"error": "No file selected -- upload a PDF first."})
-            if u.path == "/api/compare":
-                if not payload.get("a") or not payload.get("b") \
-                        or _path(payload["a"]) is None or _path(payload["b"]) is None:
-                    return self._send(400, {"error": "No file selected -- upload a PDF first."})
-            if u.path == "/api/export":
-                data, fn = export_xlsx(payload["file"],
-                                       [int(x) for x in payload["ns"]],
-                                       payload.get("edits"))
-                return self._send(
-                    200, data,
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    {"Content-Disposition": f'attachment; filename="{fn}"'})
-            if u.path == "/api/reanalyze":
-                return self._send(200, reanalyze(
-                    payload["file"], int(payload["n"]),
-                    payload["rows"], payload.get("title")))
-            if u.path == "/api/compare":
-                return self._send(200, compare(
-                    payload["a"], int(payload["na"]),
-                    payload["b"], int(payload["nb"])))
-            if u.path == "/api/upload":
-                name = upload_pdf(payload.get("filename"), payload["data_b64"])
-                return self._send(200, {"file": name})
-            if u.path == "/api/extract_region":
-                bbox = [float(v) for v in payload["bbox"]]
-                d = extract_region(payload["file"], int(payload["page"]), bbox,
-                                   payload.get("title"))
-                if d is None:
-                    no_text = not region_has_text(payload["file"], int(payload["page"]), bbox)
-                    return self._send(422, {
-                        "error": ("No text found in that box." if no_text else
-                                  "No table found in that box -- try drawing it tighter "
-                                  "around just the table's rows and columns."),
-                        "no_text": no_text, "ocr_available": X.HAVE_OCR})
-                return self._send(200, d)
-            if u.path == "/api/extract_region_ocr":
-                d = extract_region_ocr(payload["file"], int(payload["page"]),
-                                       [float(v) for v in payload["bbox"]],
-                                       payload.get("title"))
-                if d is None:
-                    return self._send(422, {"error":
-                        "OCR found nothing table-like in that box."})
-                return self._send(200, d)
-            if u.path == "/api/delete_manual":
-                try:
-                    delete_manual(payload["file"], int(payload["n"]))
-                except KeyError:
-                    return self._send(404, {"error": "that table is already gone"})
-                return self._send(200, inventory(payload["file"]))
-            if u.path == "/api/undelete_manual":
-                n = undelete_manual(payload["file"])
-                if n is None:
-                    return self._send(404, {"error": "nothing to undo"})
-                inv = inventory(payload["file"])
-                inv["restored_n"] = n
-                return self._send(200, inv)
-            return self._send(404, {"error": "not found"})
+            return handler(self, payload)
         except Exception as e:
             LOG.exception("POST %s failed", self.path)
             return self._send(500, {"error": f"{type(e).__name__}: {e}"})
@@ -787,8 +879,19 @@ def _discover_files(pdf_args):
     return files
 
 
-def run(pdf_args, host="127.0.0.1", port=None, open_browser=True):
-    logging.basicConfig(level=logging.INFO, format="  %(message)s")
+def run(pdf_args, host="127.0.0.1", port=None, open_browser=True, debug=False):
+    handlers = [logging.StreamHandler()]
+    if debug:
+        # persists past the terminal scrolling away -- if something acts up
+        # partway through a session, the file (not just stdout) is what a
+        # user would actually be able to send along
+        fh = logging.FileHandler(ROOT / "debug.log", mode="a", encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+        handlers.append(fh)
+    logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
+                        format="  %(message)s", handlers=handlers, force=True)
+    if debug:
+        LOG.info("debug logging ON -- also writing to %s", ROOT / "debug.log")
     files = _discover_files(pdf_args)
     _state["files"] = files
     for f in files:
@@ -825,9 +928,21 @@ def run(pdf_args, host="127.0.0.1", port=None, open_browser=True):
 
 
 def _cli(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    files = [a for a in argv if not a.startswith("--")]
-    run(files)
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="serve.py",
+        description="Local preview / edit / export UI for extract_all_tables.py.")
+    ap.add_argument("files", nargs="*",
+                    help="PDF file(s) or a directory of PDFs to preload")
+    ap.add_argument("--port", type=int, default=None)
+    ap.add_argument("--no-browser", action="store_true",
+                    help="don't open a browser tab on start")
+    ap.add_argument("--debug", action="store_true",
+                    help="verbose logging (a per-request server-state line, "
+                         "plus tablekit.extract's own debug output) to the "
+                         "console AND debug.log next to this script")
+    args = ap.parse_args(argv)   # argv=None -> argparse's own sys.argv[1:] default
+    run(args.files, port=args.port, open_browser=not args.no_browser, debug=args.debug)
 
 
 if __name__ == "__main__":
