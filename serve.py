@@ -906,6 +906,16 @@ def run(pdf_args, host="127.0.0.1", port=None, open_browser=True, debug=False):
     logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
                         format="  %(message)s", handlers=handlers, force=True)
     if debug:
+        # basicConfig's DEBUG level cascades to every logger in the process
+        # that doesn't have its own override -- including pdfminer (the
+        # library under pdfplumber), which logs every single parse token/
+        # seek/keyword at DEBUG. Measured live: a 20-minute, 26-file
+        # stress session produced a 4.3 GB, 44.5-million-line debug.log,
+        # nearly all of it pdfminer's own byte-level parse trace -- not
+        # this project's own ~5 debug statements, and not useful for
+        # diagnosing anything this flag is actually for. Capped back to
+        # WARNING so --debug stays a log someone could actually read.
+        logging.getLogger("pdfminer").setLevel(logging.WARNING)
         LOG.info("debug logging ON -- also writing to %s", ROOT / "debug.log")
     files = _discover_files(pdf_args)
     _state["files"] = files

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.6
+
+- **`serve.py --debug` was practically unusable for any real session: 4.3 GB / 44.5 million lines from a 20-minute, 26-file stress test.** Chased down by actually running that stress test (aimed at reproducing the never-root-caused "breaks after 2-3 runs" report from 0.7.1) with `--debug` on and watching `debug.log` grow far faster than the request count could explain. `logging.basicConfig(level=DEBUG)` cascades to every logger in the process that doesn't set its own level, not just this project's own five `LOG.debug()` calls -- including `pdfminer` (underneath `pdfplumber`), which logs every single parse token, seek and keyword at DEBUG. Sampled the actual log content at several points through the file rather than assuming, confirmed >95% of lines were `pdfminer.psparser`/`pdfminer.pdfinterp`/etc., not this project's. Fixed by capping `pdfminer`'s own logger to WARNING whenever `--debug` is on -- verified with a real before/after: the same operation (three full-document scans) that previously wrote gigabytes now writes 1,085 bytes, and what's left is exactly the useful stuff (the per-request state line, the HTTP access log, startup messages).
+- **The stress test that found it reproduced nothing else**: 20 cycles across 12 real files (960 API calls, ~19 minutes of continuous rapid file-switching, extraction, and page rendering) came back with zero errors and no unbounded memory growth. Doesn't retroactively explain the original 0.7.1 report -- this was a different session, a different kind of "repeated use" (server-side switching, not the browser session the original report described) -- but it's the first real stress test run against this debug-logging path since it was built, and it came back clean apart from the log-volume issue above.
+
 ## 0.7.5
 
 Found by actually loading many real files at once (16 years of one company's

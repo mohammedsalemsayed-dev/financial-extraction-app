@@ -7,6 +7,7 @@ One end-to-end HTTP test runs only if a sample PDF is present.
 """
 import io
 import json
+import logging
 import sys
 import threading
 import urllib.request
@@ -339,6 +340,46 @@ def test_cli_defaults_match_previous_behavior_with_no_flags(monkeypatch):
     serve._cli(["report.pdf"])
     assert captured == {"files": ["report.pdf"], "port": None,
                         "open_browser": True, "debug": False}
+
+
+class _FakeServer:
+    """Stands in for ThreadingHTTPServer in run() -- no real bind/serve, so
+    the test doesn't hang on serve_forever() or open a real socket."""
+    def __init__(self, *a, **k):
+        pass
+
+    def serve_forever(self):
+        pass
+
+
+def test_run_caps_pdfminers_own_debug_noise_when_debug_flag_is_on(monkeypatch, tmp_path):
+    """logging.basicConfig's DEBUG level cascades to every logger without
+    its own override -- including pdfminer (under pdfplumber), which logs
+    every single parse token/seek/keyword. Found live: a 20-minute, 26-file
+    stress session produced a 4.3 GB / 44.5-million-line debug.log, nearly
+    all of it pdfminer's own byte-level parse trace, not this project's."""
+    monkeypatch.setattr(serve, "ThreadingHTTPServer", _FakeServer)
+    monkeypatch.setattr(serve, "ROOT", tmp_path)     # debug.log lands here, not the real repo
+    pdfminer_logger = logging.getLogger("pdfminer")
+    original_level = pdfminer_logger.level
+    try:
+        pdfminer_logger.setLevel(logging.NOTSET)
+        serve.run([], open_browser=False, debug=True)
+        assert pdfminer_logger.level == logging.WARNING
+    finally:
+        pdfminer_logger.setLevel(original_level)
+
+
+def test_run_leaves_pdfminers_logger_alone_when_debug_is_off(monkeypatch, tmp_path):
+    monkeypatch.setattr(serve, "ThreadingHTTPServer", _FakeServer)
+    pdfminer_logger = logging.getLogger("pdfminer")
+    original_level = pdfminer_logger.level
+    try:
+        pdfminer_logger.setLevel(logging.NOTSET)
+        serve.run([], open_browser=False, debug=False)
+        assert pdfminer_logger.level == logging.NOTSET      # untouched
+    finally:
+        pdfminer_logger.setLevel(original_level)
 
 
 # ---- end-to-end HTTP (needs a real PDF) -----------------------------------
