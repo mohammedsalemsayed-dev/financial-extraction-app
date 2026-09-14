@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tablekit"
-version = "0.4.0"
-description = "Generic financial-statement table extractor for digital-text PDFs, with an arithmetic-reconciliation trust layer and a local preview/edit/export UI (automatic whole-document scan or Tabula-style manual box selection)."
+version = "0.5.0"
+description = "Generic financial-statement table extractor for digital-text PDFs, with an arithmetic-reconciliation trust layer and a local preview/edit/export UI (Tabula-style manual box selection, with an OCR failsafe for scanned regions; whole-document auto-scan is also available via the CLI)."
 readme = "EXTRACT_ALL_TABLES.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -23,6 +23,9 @@ dev = ["pytest>=8"]
 # Also needs the Tesseract binary installed separately -- pip alone isn't
 # enough on Windows: https://github.com/UB-Mannheim/tesseract/wiki
 ocr = ["pytesseract>=0.3"]
+# optional page-label lookups (extract_all_tables.page_labels); silently
+# skipped if absent, so not a core dependency
+labels = ["pypdf>=4"]
 
 [project.scripts]
 extract-tables = "extract_all_tables:main"

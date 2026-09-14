@@ -22,5 +22,6 @@ max_year_gap    = 2              # header years further apart than this are mis-
 
 # --- label health / rendering / scanned guard ---
 health_bad_below       = 0.75
+figure_outlier_sd      = 4.0     # figure > mean + N*sd of its column's log-magnitudes is suspect
 page_render_scale       = 2.0
 scanned_chars_per_page = 90

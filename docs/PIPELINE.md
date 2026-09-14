@@ -1,11 +1,13 @@
 # How the extractor works (maintainer's map)
 
-Two ways a table reaches the pipeline: **automatic** (`scan()` walks the
-whole document, detects and classifies every table on its own) and
-**manual** (`extract_region()` — the user draws a box in the UI around one
-table; no detection/classification-from-scratch needed, but it's run
-through the exact same `analyze()`/health pipeline afterward so the two
-modes produce identically-verified output).
+Three ways a table reaches the pipeline: **automatic** (`scan()` walks the
+whole document, detects and classifies every table on its own -- no UI
+button for this any more, see below), **manual** (`extract_region()` — the
+user draws a box in the UI around one table; no detection/classification-
+from-scratch needed) and **manual + OCR** (`extract_region_ocr()` — same
+box-draw UI, offered only when the box has no text layer at all, i.e. a
+scanned page). All three are run through the exact same `analyze()`/health
+pipeline afterward, so every mode produces identically-verified output.
 
 ```
 PDF ─► scan()                                    [extract_all_tables.py]
@@ -43,6 +45,13 @@ PDF ─► extract_region(pdf, page, bbox)            [extract_all_tables.py -- 
         │    or finds nothing -- ruled tables only, no borderless support in that fallback)
         │   analyze(t) / _attach_health(t)          same verification as the automatic path
 
+PDF ─► extract_region_ocr(pdf, page, bbox)        [extract_all_tables.py -- OCR failsafe]
+        │   only offered when the drawn box has NO extractable text at all (a scan/image)
+        │   ocr_rows_in_box(page, bbox)             [tablekit/img2table_backend.py]
+        │     pad the crop (20pt) before running Tesseract -- a tight crop clips/misreads
+        │     digits; needs pytesseract + the Tesseract binary (X.HAVE_OCR)
+        │   analyze(t) / _attach_health(t)          same verification as every other path
+
 analyze(t):
    _statement_kind(title, rows)                   income / BS / cash flow / SOCE / note / table
    header row + years                             + year-reversal / segmental notes
@@ -62,12 +71,18 @@ report:
    build_workbook(tables)      one sheet per table + Contents      [extract_all_tables.py]
    build_compare_workbook()    row-level diff, --compare
    serve.py + webui.html       local preview / edit / one-workbook export
-                                two entry points into the same table list:
-                                "Auto-detect all tables" (scan(), opt-in --
-                                NOT run automatically on file load, it's slow)
-                                and the page-picker box-draw UI (extract_region(),
-                                the default landing view; can extract more than
-                                one table per page without leaving the picker)
+                                ONE entry point into the table list from the
+                                UI: the page-picker box-draw (extract_region(),
+                                the landing view; can extract more than one
+                                table per page without leaving the picker).
+                                scan() itself is NOT exposed as a UI action any
+                                more -- the whole-file "Auto-detect all tables"
+                                button was pulled (unreliable, not worth
+                                shipping); scan() is still called server-side
+                                by /api/scan, which only the Compare panel uses
+                                (to inventory a SECOND loaded file's tables so
+                                it can find the matching statement) -- see
+                                serve.py's `_resolve`.
 ```
 
 ## img2table: required, not optional
@@ -87,6 +102,7 @@ before assuming a bug.
 |---|---|
 | a statement isn't detected (auto-detect) | `_recon_tables` heading regex `_RECON_HEAD_RE`; `find_all_tables` dedupe |
 | a manually-drawn box returns nothing / wrong content | `tablekit/img2table_backend.py` `rows_in_box` (`min_overlap_frac`, `row_margin`); `_merge_stacked`'s `x_tol` |
+| OCR misreads / drops digits from a scanned box | `tablekit/img2table_backend.py` `ocr_rows_in_box`'s `pad` (crop margin before Tesseract runs -- too tight clips characters) |
 | a real statement listed as "table" | `_is_structural_non_statement`, `_looks_like_not_a_statement` |
 | wrong "foots" verdict | the per-kind block in `analyze`; `_reconciles` / `_cashflow_foots` tolerances in `CONFIG` |
 | a figure is wrong | `tablekit/parse.py` `parse_number` + `test_parse_number` |

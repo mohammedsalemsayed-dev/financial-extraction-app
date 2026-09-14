@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.5.0
+
+### "Auto-detect all tables" fully removed
+- The opt-in button added in 0.4.0 is gone: false positives/misses weren't
+  reliable enough to ship, so manual box-select (plus its OCR failsafe) is
+  now the *only* way a table reaches the UI. `scan()` itself is unchanged
+  and still runs server-side -- it's what `/api/scan` uses to inventory a
+  second loaded file for the Compare panel -- but there is no UI action left
+  that triggers a whole-document scan. `serve.py`'s `_resolve` documents the
+  seam this leaves for tests.
+
+### Extraction bug fixes
+- `rows_in_box()`'s region-overlap check compared overlap only against the
+  drawn box's own area, which rejected a box deliberately drawn around just
+  *part* of a bigger region (e.g. a balance sheet's assets half only) and
+  silently dropped its header row. Now takes the max of overlap-vs-region and
+  overlap-vs-box.
+- OCR crop padding raised 6pt -> 20pt (`ocr_rows_in_box`): a tight box was
+  clipping/misreading trailing digits ("$20,565,087" -> "$20,565,C").
+
+### `%` / currency symbols preserved in the grid
+- `tablekit/parse.py`'s `FormattedNumber` (a `float` subclass carrying
+  `prefix`/`suffix`) lets `parse_number` / `coerce_cell` keep `%` and
+  currency symbols for *display* without changing how a value behaves
+  anywhere else -- footing, health-scoring and delta math all still see a
+  plain float. `serve.py` sends the formatting as a parallel `fmt` field;
+  `webui.html`'s `fmt()` helper re-applies it only to the shown text.
+
+### Theming, localization, and UI polish
+- Full light/dark theming via CSS custom properties, matching the CPI
+  Automation Platform's cream/navy/gold palette, plus complete English/Arabic
+  (RTL) localization of the UI chrome (`I18N` dict + `t()` / `applyI18n()` in
+  `webui.html`). Extracted table content and server-generated verdict text
+  are deliberately NOT translated (see the comment above `I18N`).
+- New onboarding screen with a working drag-and-drop upload zone.
+- Export tray flags at-risk tables (no foot / low health) in red.
+- Compare panel: color-coded verdict banner (restated vs clean), card-styled
+  diff table, inline "RESTATED" badge on the affected row.
+- `.design-mockup/*.dc.html` — design-canvas mockup sources these screens
+  were drawn from (main grid, upload, export review, compare), kept for
+  future updates; the seeded/published canvas output itself is gitignored
+  (a multi-MB copy of the design tool's own editor, not app source).
+
+### Housekeeping
+- `run_app.bat` was still launching `python -m financial_extract` -- the
+  pre-rewrite MVP shell, superseded since 0.4.0 by `serve.py` + `webui.html`
+  + `tablekit/` but never repointed. Fixed to launch `serve.py`.
+- `financial_extract/` (the MVP shell it launched) moved to
+  `archive/financial_extract/` -- same reasoning as `extract_two_tables.py`
+  below: nothing imports it, and leaving it at the repo root read as a live
+  alternative to the real app when it wasn't one.
+- `extract_all_tables.toml.example` was missing `figure_outlier_sd` (added
+  in 0.4.0's figure-health work) despite claiming to list every recognised
+  key.
+- `EXTRACT_ALL_TABLES.md` / `docs/PIPELINE.md` updated: both still described
+  "Auto-detect all tables" as a live UI action and neither mentioned the OCR
+  failsafe path at all.
+
 ## 0.4.0
 
 ### Second geometry engine

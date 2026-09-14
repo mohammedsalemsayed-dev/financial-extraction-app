@@ -5,7 +5,7 @@
 *.log
 __pycache__/
 _t/
-financial_extract/session/
+archive/financial_extract/session/
 
 # Editor and operating-system files
 .DS_Store

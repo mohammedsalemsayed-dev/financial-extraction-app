@@ -7,9 +7,14 @@ Generic, company-agnostic. Four things:
 3. **Export** the picked tables as **one** Excel workbook (one sheet per table).
 4. **Compare** the same tables across two reports and show what changed.
 
-Digital PDFs only (real text layer — **no OCR**). Put the file next to
+Digital PDFs only (real text layer). Put the file next to
 `telecom_extract.py` (it borrows that file's geometry helpers to recover
 borderless / landscape statements; still runs without it, just weaker on those).
+The CLI (`--list`, `--audit`, `--compare`) and the whole-document scan never
+use OCR. The web UI's manual box-select is the one exception: drawing a box
+around a region with **no text layer at all** (a scanned page/figure) offers
+an **"OCR this region"** failsafe (Tesseract, if installed) — see the preview
+UI section below and `docs/PIPELINE.md`.
 
 ### The preview UI
 
@@ -35,6 +40,9 @@ consistency banner.
   a selected table is NO FOOT / low-health.
 - **Compare** panel: pick a second loaded file → row-level diff of the same
   statement.
+- A drawn box with **no extractable text** (a scanned page) offers **"OCR
+  this region"** instead — needs `pytesseract` + the Tesseract binary; runs
+  through the same verification pipeline as every other extraction.
 - `Select all statements`, `j`/`k` or `↑`/`↓` to walk the list, `space` to tick.
 - Panes stack on a narrow window.
 
