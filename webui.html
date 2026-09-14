@@ -87,6 +87,9 @@
   header .spacer{flex:1}
   .btn{padding:6px 12px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
     font-weight:500;transition:background .12s,border-color .12s,box-shadow .12s}
+  #fileSel{padding:6px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+    color:inherit;font:inherit;font-weight:500;max-width:220px}
+  #fileSel:hover{border-color:var(--line-hover)}
   .btn:hover{background:var(--line2);border-color:var(--line-hover)}
   .btn:active{background:var(--line2);box-shadow:inset 0 1px 2px rgba(16,24,40,.08)}
   .btn:disabled{opacity:.42;cursor:not-allowed;background:var(--bg)}
@@ -363,7 +366,7 @@
   <span id="engineBadge"></span>
   <button class="btn" id="layoutBtn" data-i18n-title="layoutBtnTitle" title="switch between side-by-side and stacked panes (applies whenever you're viewing a table)" data-i18n="sideBySide">⬌ Side by side</button>
   <span class="spacer"></span>
-  <button class="lang-toggle" id="langToggle" title="Switch to Arabic / التبديل إلى العربية">EN / ع</button>
+  <button class="lang-toggle" id="langToggle" title="Switch to Arabic / التبديل إلى العربية" aria-label="Switch to Arabic / التبديل إلى العربية">EN / ع</button>
   <button class="theme-toggle" id="themeToggle" data-i18n-title="themeToggleTitle" title="Switch light/dark mode">
     <svg id="themeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
   </button>
@@ -407,8 +410,33 @@ const state = {
   files:[], file:null, tables:[], order:[], sel:new Set(),
   active:null, zoom:false, edits:{}, reTimer:null, cmp:null,
   page:1, pageCount:null, box:null, searchQ:"", searchHits:null, quickfind:null,
-  sideBySide:_savedSideBySide, pickerZoom:false,
+  sideBySide:_savedSideBySide, pickerZoom:false, undoStack:{},
 };
+
+// -------------------------------------------------- per-file UI state -----
+// Selection / export order / the workbook name are cheap-to-redo browser
+// preferences, not authoritative data (unlike the extracted tables
+// themselves, which serve.py now autosaves server-side -- see
+// _save_session in serve.py) -- so these live in localStorage, mirrored on
+// every change and silently restored on load. Per-viewer convenience only:
+// wrapped in try/catch since a private window or blocked site data can make
+// localStorage throw, and the app must still work fine without it.
+function uiStateKey(file){ return "tk_ui_" + file; }
+function saveUiState(){
+  if (!state.file) return;
+  try{
+    localStorage.setItem(uiStateKey(state.file), JSON.stringify({
+      sel: [...state.sel], order: state.order,
+      fileName: $("#fileName") ? $("#fileName").value : "",
+    }));
+  }catch(e){}
+}
+function loadUiState(file){
+  try{
+    const raw = localStorage.getItem(uiStateKey(file));
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
 // kind identifiers stay fixed regardless of language (they're matched
 // against the server's own `kind` field); only the DISPLAYED name -- via
 // kindName() below, which looks the current translation up through t() --
@@ -486,8 +514,8 @@ function showModal({title, body, okText="Remove", danger=true}){
     const host = document.createElement("div");
     host.className = "modal-backdrop";
     host.innerHTML = `
-      <div class="modal-box">
-        <div class="modal-title">${title}</div>
+      <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <div class="modal-title" id="modalTitle">${title}</div>
         <div class="modal-body">${body}</div>
         <div class="modal-actions">
           <button class="btn" data-a="cancel">${t('cancelBtn')}</button>
@@ -496,12 +524,21 @@ function showModal({title, body, okText="Remove", danger=true}){
       </div>`;
     document.body.appendChild(host);
     const done = v => { host.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
-    host.querySelector('[data-a="cancel"]').onclick = () => done(false);
-    host.querySelector('[data-a="ok"]').onclick = () => done(true);
+    const cancelBtn = host.querySelector('[data-a="cancel"]');
+    const okBtn = host.querySelector('[data-a="ok"]');
+    cancelBtn.onclick = () => done(false);
+    okBtn.onclick = () => done(true);
     host.addEventListener("mousedown", e => { if (e.target === host) done(false); });
-    const onKey = e => { if (e.key === "Escape") done(false); };
+    // only two focusable elements ever exist in here -- a plain wrap-around
+    // is enough to keep Tab from leaving the dialog into the page behind it
+    const onKey = e => {
+      if (e.key === "Escape") return done(false);
+      if (e.key !== "Tab") return;
+      e.preventDefault();
+      (document.activeElement === okBtn ? cancelBtn : okBtn).focus();
+    };
     document.addEventListener("keydown", onKey);
-    host.querySelector('[data-a="ok"]').focus();
+    okBtn.focus();
   });
 }
 function confirmDialog(msg, okText){
@@ -511,11 +548,39 @@ function showErrorToast(msg){
   const host = $("#globalToasts");
   const el = document.createElement("div");
   el.className = "extract-toast toast-error";
-  el.innerHTML = `⚠<span class="spacer"></span><button class="close" data-act="dismiss">×</button>`;
+  el.innerHTML = `⚠<span class="spacer"></span><button class="close" data-act="dismiss" title="${t('dismissTitle')}" aria-label="${t('dismissTitle')}">×</button>`;
   el.insertBefore(document.createTextNode(msg), el.querySelector(".spacer"));
   host.prepend(el);
   el.querySelector('[data-act="dismiss"]').onclick = () => el.remove();
   setTimeout(()=>{ if (el.isConnected) el.remove(); }, 9000);
+}
+// a plain informational toast (no action) -- e.g. "restored N tables"
+function showInfoToast(msg, ms=6000){
+  const host = $("#globalToasts");
+  const el = document.createElement("div");
+  el.className = "extract-toast";
+  el.innerHTML = `${msg}<span class="spacer"></span><button class="close" data-act="dismiss" title="${t('dismissTitle')}" aria-label="${t('dismissTitle')}">×</button>`;
+  host.prepend(el);
+  el.querySelector('[data-act="dismiss"]').onclick = () => el.remove();
+  setTimeout(()=>{ if (el.isConnected) el.remove(); }, ms);
+}
+// a toast with one action button (e.g. "Table removed. [Undo]") -- the
+// action always dismisses the toast whether it throws or not, so a failed
+// undo doesn't leave a dead button sitting on screen
+function showActionToast(msg, actionLabel, onAction, ms=8000){
+  const host = $("#globalToasts");
+  const el = document.createElement("div");
+  el.className = "extract-toast";
+  el.innerHTML = `${msg}<span class="spacer"></span>
+    <button class="btn" data-act="go">${actionLabel}</button>
+    <button class="close" data-act="dismiss" title="${t('dismissTitle')}" aria-label="${t('dismissTitle')}">×</button>`;
+  host.prepend(el);
+  el.querySelector('[data-act="dismiss"]').onclick = () => el.remove();
+  el.querySelector('[data-act="go"]').onclick = async () => {
+    el.remove();
+    try{ await onAction(); }catch(e){ showErrorToast(e.message); }
+  };
+  setTimeout(()=>{ if (el.isConnected) el.remove(); }, ms);
 }
 // the OCR failsafe: only ever offered (never run automatically) when a box
 // came back with literally no text at all -- see doExtractRegion's catch.
@@ -526,7 +591,7 @@ function showOcrOfferToast(bbox){
   el.innerHTML = `${t('noTextInBox')}
     <span class="spacer"></span>
     <button class="btn btn-accent" data-act="ocr">${t('ocrThisRegion')}</button>
-    <button class="close" data-act="dismiss">×</button>`;
+    <button class="close" data-act="dismiss" title="${t('dismissTitle')}" aria-label="${t('dismissTitle')}">×</button>`;
   host.prepend(el);
   el.querySelector('[data-act="dismiss"]').onclick = () => el.remove();
   el.querySelector('[data-act="ocr"]').onclick = () => { el.remove(); doExtractRegionOcr(bbox); };
@@ -601,13 +666,20 @@ const I18N = {
     consistencyPillTitle: "prior-year column disagrees with {vs}",
     nothingToShow: "Nothing to show.",
     removeTableTitle: "remove this extracted table",
-    confirmRemoveTable: "Remove this extracted table? This can't be undone.",
+    confirmRemoveTable: "Remove this extracted table? You can undo this right after.",
     removeBtn: "Remove", cancelBtn: "Cancel", areYouSure: "Are you sure?",
     removeFailed: "Couldn't remove that table: {msg}",
+    tableRemoved: "Table removed.", undoBtn: "Undo", undoFailed: "Couldn't undo: {msg}",
+    nothingToUndo: "Nothing left to undo.",
+    restoredTablesToast: "Restored {n} table(s) from your last session.",
+    undoEditTitle: "undo the last edit to this table", undoEditBtn: "↺ Undo edit",
 
     exportOrder: "Export order", exportOrderN: "Export order — {n}",
     tickToAdd: "tick tables to add them",
     exportBtnN: "Export {n} →",
+    moveUpTitle: "move up in the export order", moveDownTitle: "move down in the export order",
+    removeFromOrderTitle: "remove from the export order",
+    queueTableCount: "{n} table(s)",
 
     selectATableH2: "Select a table", pageWord: "page", ofTotal: "of {total}",
     prevBtn: "‹ Prev", nextBtn: "Next ›",
@@ -645,6 +717,8 @@ const I18N = {
     compareTitle: "Compare", compareVs: "this table vs the same statement in",
     compareBtn: "Compare →", scanningMatching: "scanning {file} & matching…",
     noKindFoundIn: "no {kind} found in {file}", compareFailed: "compare failed: {msg}",
+    cmpVerdictRestated: "{changed} changed, {new} new, {removed} removed, {restated} RESTATED",
+    cmpVerdictClean: "{changed} changed, {new} new, {removed} removed, prior-year columns agree",
 
     uploadFailed: "Upload failed: {msg}",
     riskyExportWarn: "{risky} of the {total} selected table(s) have a warning (NO FOOT or low data-health):",
@@ -685,13 +759,20 @@ const I18N = {
     consistencyPillTitle: "عمود السنة السابقة لا يطابق {vs}",
     nothingToShow: "لا يوجد ما يُعرض.",
     removeTableTitle: "إزالة هذا الجدول المستخرج",
-    confirmRemoveTable: "إزالة هذا الجدول المستخرج؟ لا يمكن التراجع عن هذا.",
+    confirmRemoveTable: "إزالة هذا الجدول المستخرج؟ يمكنك التراجع عن هذا مباشرة بعدها.",
     removeBtn: "إزالة", cancelBtn: "إلغاء", areYouSure: "هل أنت متأكد؟",
     removeFailed: "تعذّرت إزالة الجدول: {msg}",
+    tableRemoved: "تمت إزالة الجدول.", undoBtn: "تراجع", undoFailed: "تعذّر التراجع: {msg}",
+    nothingToUndo: "لا يوجد ما يمكن التراجع عنه.",
+    restoredTablesToast: "تم استرجاع {n} جدول(جداول) من جلستك الأخيرة.",
+    undoEditTitle: "التراجع عن آخر تعديل لهذا الجدول", undoEditBtn: "↺ تراجع عن التعديل",
 
     exportOrder: "ترتيب التصدير", exportOrderN: "ترتيب التصدير — {n}",
     tickToAdd: "حدد الجداول لإضافتها",
     exportBtnN: "تصدير {n} →",
+    moveUpTitle: "نقل لأعلى في ترتيب التصدير", moveDownTitle: "نقل لأسفل في ترتيب التصدير",
+    removeFromOrderTitle: "إزالة من ترتيب التصدير",
+    queueTableCount: "{n} جدول",
 
     selectATableH2: "اختر جدولًا", pageWord: "صفحة", ofTotal: "من {total}",
     prevBtn: "‹ السابق", nextBtn: "التالي ›",
@@ -729,6 +810,8 @@ const I18N = {
     compareTitle: "مقارنة", compareVs: "قارن هذا الجدول بنفس القائمة في",
     compareBtn: "قارن →", scanningMatching: "جارٍ فحص {file} والمطابقة…",
     noKindFoundIn: "لم يُعثر على {kind} في {file}", compareFailed: "فشلت المقارنة: {msg}",
+    cmpVerdictRestated: "{changed} معدَّل، {new} جديد، {removed} محذوف، {restated} أُعيد إدراجه",
+    cmpVerdictClean: "{changed} معدَّل، {new} جديد، {removed} محذوف، أعمدة السنة السابقة متطابقة",
 
     uploadFailed: "فشل الرفع: {msg}",
     riskyExportWarn: "{risky} من أصل {total} جدولًا محددًا يحمل تحذيرًا (لا مطابقة أو جودة بيانات منخفضة):",
@@ -802,7 +885,14 @@ function applyI18n(lang){
   });
   document.querySelectorAll("[data-i18n-title]").forEach(el=>{
     const k = el.dataset.i18nTitle;
-    if (dict[k] != null) el.setAttribute("title", dict[k]);
+    if (dict[k] != null){
+      el.setAttribute("title", dict[k]);
+      // same text for screen readers -- title alone isn't reliably
+      // announced, and several of these (themeToggle, the tray's ↑/↓/×
+      // buttons) carry no visible text at all for aria-label to redundantly
+      // repeat over
+      el.setAttribute("aria-label", dict[k]);
+    }
   });
   document.documentElement.lang = lang;
   document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
@@ -848,6 +938,32 @@ function setControlsEnabled(on){
   FILE_GATED_IDS.forEach(id=>{ const el=$("#"+id); if (el) el.disabled = !on; });
 }
 
+// the file-picker <select> doubles as a lightweight multi-file queue: each
+// option's label carries that file's table count so you can see at a
+// glance which reports still need work without switching to each one.
+// /api/scan never triggers a scan itself (serve.py's inventory() docstring)
+// -- it only reads back what's already there, so fetching it for every
+// loaded file here is cheap, not a re-extraction.
+// cheaper than refreshFileQueueLabels() -- no fetch, just reflects a count
+// already in memory onto the currently-selected file's own <option>
+function updateCurrentFileQueueLabel(){
+  const sel = $("#fileSel");
+  if (!sel || sel.hidden) return;
+  const opt = [...sel.options].find(o=>o.value===state.file);
+  if (opt) opt.textContent = state.tables.length
+    ? `${state.file} — ${t('queueTableCount',{n:state.tables.length})}` : state.file;
+}
+async function refreshFileQueueLabels(){
+  const sel = $("#fileSel");
+  if (!sel || !state.files.length) return;
+  const counts = await Promise.all(state.files.map(async name=>{
+    try{ const inv = await jget("/api/scan?file="+encodeURIComponent(name)); return inv.tables.length; }
+    catch(e){ return 0; }
+  }));
+  sel.innerHTML = state.files.map((name,i)=>
+    `<option value="${name}"${name===state.file?" selected":""}>${name}${counts[i]?` — ${t('queueTableCount',{n:counts[i]})}`:""}</option>`
+  ).join("");
+}
 async function boot(){
   setControlsEnabled(false);
   try{
@@ -862,7 +978,8 @@ async function boot(){
   sel.innerHTML = f.files.map(n=>`<option>${n}</option>`).join("");
   sel.hidden = f.files.length <= 1;
   sel.onchange = () => loadFile(sel.value);
-  if (f.files.length) loadFile(f.files[0]);
+  if (f.files.length > 1) refreshFileQueueLabels();
+  if (f.files.length) loadFile(f.files[0], {isBoot:true});
   else {
     $("#list").innerHTML = `<div class="msg">${t('uploadPrompt')}</div>`;
     $("#preview").innerHTML = `<div class="onboarding" id="onboarding"></div>`;
@@ -888,9 +1005,9 @@ function ensureSplitLayout(){
     </div>`;
 }
 
-async function loadFile(name){
+async function loadFile(name, opts={}){
   state.file = name; state.tables = []; state.order = []; state.sel.clear();
-  state.active = null; state.edits = {}; state.cmp = null;
+  state.active = null; state.edits = {}; state.cmp = null; state.undoStack = {};
   state.page = 1; state.pageCount = null; state.box = null;
   state.searchQ = ""; state.searchHits = null; state.quickfind = null;
   setControlsEnabled(true);
@@ -902,6 +1019,27 @@ async function loadFile(name){
   try{
     const inv = await jget("/api/scan?file="+encodeURIComponent(name));
     state.tables = inv.tables; state.order = inv.tables.map(t=>t.n);
+    // re-apply whatever this browser last had ticked/ordered/named for this
+    // exact file -- the tables themselves are already back (serve.py's own
+    // session autosave put them in `inv`); this is just the lighter,
+    // per-viewer preferences layered back on top. Silent and automatic
+    // rather than a confirm prompt: worst case the user re-ticks a box,
+    // there's nothing here that isn't trivially redone by hand.
+    const saved = loadUiState(name);
+    const liveNs = new Set(state.order);
+    if (saved){
+      (saved.sel||[]).forEach(n=>{ if (liveNs.has(n)) state.sel.add(n); });
+      if (saved.order && saved.order.length){
+        const kept = saved.order.filter(n=>liveNs.has(n));
+        const extra = state.order.filter(n=>!kept.includes(n));
+        state.order = [...kept, ...extra];
+      }
+      if (saved.fileName) $("#fileName").value = saved.fileName;
+      syncExport(); renderTray();
+    }
+    if (opts.isBoot && state.tables.length){
+      showInfoToast(t("restoredTablesToast", {n: state.tables.length}));
+    }
     renderList(inv.warnings||[]);
   }catch(e){ /* nothing extracted for this file yet -- fine */ }
   showPicker();
@@ -963,6 +1101,8 @@ function renderList(warnings){
 async function deleteManualTable(n){
   const ok = await confirmDialog(t("confirmRemoveTable"));
   if (!ok) return;
+  const wasSelected = state.sel.has(n);
+  const wasOrderIdx = state.order.indexOf(n);
   try{
     const inv = await jpost("/api/delete_manual", {file:state.file, n});
     state.tables = inv.tables; state.order = inv.tables.map(x=>x.n);
@@ -972,13 +1112,37 @@ async function deleteManualTable(n){
       state.active = null;
       $("#detailPane").innerHTML = `<div class="empty">${t('detailEmpty')}</div>`;
     }
+    updateCurrentFileQueueLabel();
+    saveUiState();
+    showActionToast(t("tableRemoved"), t("undoBtn"), () => undeleteTable(n, wasSelected, wasOrderIdx));
   }catch(e){ showErrorToast(t("removeFailed",{msg:e.message})); }
+}
+
+async function undeleteTable(n, wasSelected, wasOrderIdx){
+  try{
+    const inv = await jpost("/api/undelete_manual", {file:state.file});
+    state.tables = inv.tables; state.order = inv.tables.map(x=>x.n);
+    if (wasOrderIdx >= 0 && state.order.includes(n)){
+      state.order = state.order.filter(x=>x!==n);
+      state.order.splice(Math.min(wasOrderIdx, state.order.length), 0, n);
+    }
+    if (wasSelected) state.sel.add(n);
+    syncExport(); renderTray(); renderList(inv.warnings||[]);
+    updateCurrentFileQueueLabel();
+    saveUiState();
+  }catch(e){ showErrorToast(t("undoFailed",{msg:e.message})); }
 }
 
 function toggleSel(n,on){
   if (on){ state.sel.add(n); if(!state.order.includes(n)) state.order.push(n); }
   else state.sel.delete(n);
-  syncExport(); renderTray();
+  syncExport(); renderTray(); saveUiState();
+}
+// same "worth a second look before exporting" threshold the confirm-dialog
+// uses at export time (health_bad_below in tablekit/config.py) -- one place
+// so the tray's warning icon and the export-time confirmation never disagree
+function isRisky(tbl){
+  return !!tbl && (tbl.foots===false || (tbl.health!=null && tbl.health<0.75));
 }
 function renderTray(){
   const chosen = state.order.filter(n=>state.sel.has(n));
@@ -986,11 +1150,11 @@ function renderTray(){
   if (!chosen.length){ tray.innerHTML = `<h4>${t('exportOrder')}</h4><div class="empty">${t('tickToAdd')}</div>`; return; }
   tray.innerHTML = `<h4>${t('exportOrderN',{n:chosen.length})}</h4>` + chosen.map((n,i)=>{
     const tbl = state.tables.find(x=>x.n===n);
-    const risky = tbl && (tbl.foots===false || (tbl.health!=null && tbl.health<0.75));
+    const risky = isRisky(tbl);
     return `<div class="item" data-n="${n}"><span class="nm${risky?" risky":""}">${i+1}. ${nameOf(tbl)}${risky?" ⚠":""}</span>
-      <button data-up="${n}" ${i===0?"disabled":""}>↑</button>
-      <button data-down="${n}" ${i===chosen.length-1?"disabled":""}>↓</button>
-      <button data-rm="${n}">×</button></div>`;
+      <button data-up="${n}" ${i===0?"disabled":""} aria-label="${t('moveUpTitle')}" title="${t('moveUpTitle')}">↑</button>
+      <button data-down="${n}" ${i===chosen.length-1?"disabled":""} aria-label="${t('moveDownTitle')}" title="${t('moveDownTitle')}">↓</button>
+      <button data-rm="${n}" aria-label="${t('removeFromOrderTitle')}" title="${t('removeFromOrderTitle')}">×</button></div>`;
   }).join("");
   tray.querySelectorAll("[data-up]").forEach(b=>b.onclick=()=>moveSel(+b.dataset.up,-1));
   tray.querySelectorAll("[data-down]").forEach(b=>b.onclick=()=>moveSel(+b.dataset.down,1));
@@ -1005,7 +1169,7 @@ function moveSel(n,dir){
   if (j<0||j>=chosen.length) return;
   [chosen[i],chosen[j]]=[chosen[j],chosen[i]];
   state.order = [...chosen, ...state.order.filter(x=>!state.sel.has(x))];
-  renderTray();
+  renderTray(); saveUiState();
 }
 function syncExport(){
   const b=$("#exportBtn"), n=state.sel.size;
@@ -1245,6 +1409,7 @@ async function _afterExtract(d){
   const inv = await jget("/api/scan?file="+encodeURIComponent(state.file));
   state.tables = inv.tables; state.order = inv.tables.map(x=>x.n);
   renderList(inv.warnings||[]);
+  updateCurrentFileQueueLabel();
   state._lastDetail = d;
   // stay on the picker (same page) so another table can be grabbed right
   // away -- clear the box and show a small confirmation. The result also
@@ -1267,7 +1432,7 @@ function showExtractToast(d){
   el.innerHTML = `${t('extractedPrefix')} <b>${(nameOf(d)||t('kind_table')).replace(/</g,"&lt;")}</b>
     <span class="spacer"></span>
     <button class="btn" data-act="view">${t('viewBtn')}</button>
-    <button class="close" data-act="dismiss" title="${t('dismissTitle')}">×</button>`;
+    <button class="close" data-act="dismiss" title="${t('dismissTitle')}" aria-label="${t('dismissTitle')}">×</button>`;
   host.prepend(el);
   el.querySelector('[data-act="view"]').onclick = ()=>{
     state.active = d.n;
@@ -1282,6 +1447,24 @@ function showExtractToast(d){
 function baseRows(n, d){
   const e = state.edits[n];
   return (e && e.rows ? e.rows : d.rows).map(r=>r.slice());
+}
+// Undo, one row-mutation at a time: every place that's about to CHANGE
+// rows (cell edit, insert/delete/split/merge-up, swap year columns) snap-
+// shots the rows as they stood right before, onto a small per-table stack.
+// undoLastEdit() below is the only thing that ever pops it -- it restores
+// via pushEdit() directly rather than routing back through one of those
+// three call sites, so undoing never pushes a new snapshot of its own.
+function snapshotForUndo(n, d){
+  const arr = state.undoStack[n] = state.undoStack[n] || [];
+  arr.push(baseRows(n, d));
+  if (arr.length > 20) arr.shift();
+}
+function undoLastEdit(n, d){
+  const arr = state.undoStack[n];
+  if (!arr || !arr.length){ showInfoToast(t("nothingToUndo"), 3000); return; }
+  const rows = arr.pop();
+  pushEdit(n, rows);
+  renderPreview(n, state._lastDetail, true);
 }
 function pushEdit(n, rows, extra){
   const e = state.edits[n] = Object.assign({dirty:new Set()}, state.edits[n]||{}, extra||{});
@@ -1327,10 +1510,10 @@ function renderPreview(n, d){
     const isHdr=i<=hi, di=i-ds;
     const cls=[isHdr?"hdr":"", tot.has(i)?"total":""].filter(Boolean).join(" ");
     let tds = `<td class="rowctl">`+
-      `<button data-act="ins" data-i="${i}" title="${t('insertRowBelow')}">＋</button>`+
-      `<button data-act="del" data-i="${i}" title="${t('deleteRow')}">✕</button>`+
-      `<button data-act="split" data-i="${i}" title="${t('splitLabel')}">⤶</button>`+
-      `<button data-act="mergeup" data-i="${i}" title="${t('mergeUp')}" ${i===0?"disabled":""}>⭡</button></td>`;
+      `<button data-act="ins" data-i="${i}" title="${t('insertRowBelow')}" aria-label="${t('insertRowBelow')}">＋</button>`+
+      `<button data-act="del" data-i="${i}" title="${t('deleteRow')}" aria-label="${t('deleteRow')}">✕</button>`+
+      `<button data-act="split" data-i="${i}" title="${t('splitLabel')}" aria-label="${t('splitLabel')}">⤶</button>`+
+      `<button data-act="mergeup" data-i="${i}" title="${t('mergeUp')}" aria-label="${t('mergeUp')}" ${i===0?"disabled":""}>⭡</button></td>`;
     // the "fmt" side-channel is keyed to the SERVER's own rows -- once the
     // user has typed an edit for this table, row/column positions can no
     // longer be trusted to still line up with it, so stick to plain numbers
@@ -1391,6 +1574,7 @@ function renderPreview(n, d){
     <div class="toolbar">
       <input class="sheet" id="sheetName" placeholder="${t('sheetNamePh')}" value="${(ed&&ed.title)||""}">
       ${vc.length>=2?`<button class="btn" id="swapYears">${t('swapYears')}</button>`:""}
+      ${(state.undoStack[n]||[]).length?`<button class="btn" id="undoEditBtn" title="${t('undoEditTitle')}">${t('undoEditBtn')}</button>`:""}
       ${ed?`<button class="btn" id="resetEdits">${t('undoEdits')}</button>`:""}
       <span class="hint">${t('editHint')}</span>
     </div>
@@ -1416,11 +1600,13 @@ function renderPreview(n, d){
 function wirePreview(n, d){
   $("#sheetName").oninput = e => pushEdit(n, null, {title:e.target.value});
   const sy=$("#swapYears"); if(sy) sy.onclick=()=>{
+    snapshotForUndo(n, d);
     const rows=baseRows(n,d); const [a,b]=d.value_cols;
     rows.forEach(r=>{const t=r[a];r[a]=r[b];r[b]=t;});
     pushEdit(n, rows); openTable(n);
   };
-  const re=$("#resetEdits"); if(re) re.onclick=()=>{ delete state.edits[n]; renderList([]); openTable(n); };
+  const re=$("#resetEdits"); if(re) re.onclick=()=>{ delete state.edits[n]; state.undoStack[n]=[]; renderList([]); openTable(n); };
+  const ue=$("#undoEditBtn"); if(ue) ue.onclick=()=> undoLastEdit(n, d);
 
   $("#detailPane").querySelectorAll("td[contenteditable]").forEach(td=>{
     td.addEventListener("blur", ()=>commitCell(n, d, +td.dataset.r, +td.dataset.c, td));
@@ -1435,6 +1621,7 @@ function commitCell(n, d, r, c, td){
   const rows = baseRows(n, d);
   const raw = td.textContent.trim();
   if (raw === (td.dataset.orig ?? "")) return;
+  snapshotForUndo(n, d);
   rows[r][c] = raw;                       // keep the RAW string; server parses it
   const e = state.edits[n] = Object.assign({dirty:new Set()}, state.edits[n]||{});
   e.rows = rows; e.dirty.add(r+","+c);
@@ -1443,6 +1630,7 @@ function commitCell(n, d, r, c, td){
 }
 
 function rowAction(n, d, act, i){
+  snapshotForUndo(n, d);
   let rows = baseRows(n, d);
   if (act === "ins"){
     rows.splice(i+1, 0, new Array(Math.max(...rows.map(x=>x.length),1)).fill(""));
@@ -1490,6 +1678,16 @@ function renderComparePanel(n, d){
       const cmp = await jpost("/api/compare",{a:state.file,na:n,b:bfile,nb:match.n});
       const hdr = cmp.rows[0];
       const isWarn = /RESTATED/.test(cmp.verdict);
+      // `counts` (plain numbers) lets the verdict SENTENCE be translated;
+      // the free-form per-row `notes`/reconcile-explain text elsewhere is
+      // still English-only server prose -- see the note above I18N for why
+      // (a much larger change to extract_all_tables.py itself). Fall back
+      // to the raw English string if an older server response lacks it.
+      const c = cmp.counts;
+      const verdictText = c
+        ? t(isWarn?"cmpVerdictRestated":"cmpVerdictClean",
+            {changed:c.changed, new:c.new, removed:c.removed, restated:c.restated})
+        : cmp.verdict;
       let rowsHtml = "";
       for (let r=1;r<cmp.rows.length;r++){
         const row = cmp.rows[r];
@@ -1498,7 +1696,7 @@ function renderComparePanel(n, d){
           `<td class="${(ci>=1&&ci<=6&&typeof v==='number')?'num':''}">${v==null?"":(typeof v==='number'?v.toLocaleString():v)}${ci===0&&restated?`<span class="restated-tag">RESTATED</span>`:""}</td>`
         ).join("") + `</tr>`;
       }
-      $("#cmpOut").innerHTML = `<div class="cmp-verdict ${isWarn?"warn":"ok"}">${isWarn?"⚠":"✓"} ${cmp.verdict}</div>
+      $("#cmpOut").innerHTML = `<div class="cmp-verdict ${isWarn?"warn":"ok"}">${isWarn?"⚠":"✓"} ${verdictText}</div>
         <div style="max-height:44vh;overflow:auto"><table>
           <thead><tr>${hdr.map(h=>`<th>${h}</th>`).join("")}</tr></thead>
           <tbody>${rowsHtml}</tbody></table></div>`;
@@ -1523,9 +1721,9 @@ async function uploadPdfFile(f){
     const res = await jpost("/api/upload", {filename:f.name, data_b64});
     if (!state.files.includes(res.file)) state.files.push(res.file);
     const sel = $("#fileSel");
-    sel.innerHTML = state.files.map(n=>`<option>${n}</option>`).join("");
-    sel.value = res.file; sel.hidden = state.files.length <= 1;
+    sel.hidden = state.files.length <= 1;
     await loadFile(res.file);
+    if (state.files.length > 1) refreshFileQueueLabels();
   }catch(err){ showErrorToast(t("uploadFailed",{msg:err.message})); }
   finally{ label.textContent = t("upload"); }
 }
@@ -1536,6 +1734,7 @@ $("#uploadInput").onchange = async (e)=>{
 };
 
 $("#pickerBtn").onclick = ()=>showPicker();
+$("#fileName").addEventListener("input", saveUiState);
 
 // always-visible header control (not tied to any one table's view) --
 // arranges the PERSISTENT picker+detail split (#splitRegion) -- both panes
@@ -1560,8 +1759,7 @@ $("#selClear").onclick = ()=>{ state.sel.clear(); syncExport(); renderTray(); re
 
 $("#exportBtn").onclick = async ()=>{
   const ns = state.order.filter(n=>state.sel.has(n));
-  const risky = ns.map(n=>state.tables.find(x=>x.n===n))
-    .filter(x=>x.foots===false || (x.health!=null && x.health<0.75));
+  const risky = ns.map(n=>state.tables.find(x=>x.n===n)).filter(isRisky);
   if (risky.length){
     const ok = await confirmDialog(
       t('riskyExportWarn',{risky:risky.length, total:ns.length}) + `\n\n`

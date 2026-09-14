@@ -96,6 +96,21 @@ on/off" badge in the header; `extract_all_tables.HAVE_IMG2TABLE` is the flag
 to check in code. If you see `img2table: off`, install the group above
 before assuming a bug.
 
+## Session persistence
+
+`serve.py`'s `_state` dict is the live, in-memory source of truth (same as
+always) -- `uploads/.sessions/<file>.pkl` is a WRITE-THROUGH cache of just
+`_state["manual"][file]` (the manual extractions + their edits) and
+`_state["deleted"][file]` (the undo-delete stack), not a second source of
+truth. `_save_session` fires after every mutation (extract, OCR-extract,
+edit-commit via `reanalyze`, delete, undelete); `_load_session` runs once
+per file at startup (`run()`) and on upload. Deliberately NOT persisted:
+`_state["scans"]` (the auto-scan cache) and `_state["pngs"]` -- both cheap
+to regenerate, not worth the disk churn. Pickle, not JSON: see the comment
+above `_save_session` for why that's safe here specifically. If a session
+file won't load (schema drift, a corrupted write), `_load_session` logs and
+starts that file fresh rather than crashing the server.
+
 ## Where to change things
 
 | symptom | look at |
@@ -111,6 +126,7 @@ before assuming a bug.
 | a threshold needs tuning | `tablekit/config.py` `CONFIG` (or `extract_all_tables.toml`) |
 | the UI | `serve.py` endpoints + `webui.html` (single file) |
 | the highlighted box on the preview page looks wrong | it's derived from the actually-extracted rows, not the drawn input or a heuristic guess -- see `extract_region`'s `shown_bbox` and `rows_in_box`'s docstring |
+| work disappears after a restart / refresh | `serve.py` `_save_session` / `_load_session` (see "Session persistence" above); the UI-only mirror is `webui.html`'s `saveUiState`/`loadUiState` (localStorage) |
 
 ## Tests
 
@@ -121,4 +137,16 @@ cases). `test_manual_mode.py` also has PDF-gated cases (img2table region
 merge/select regressions, the full upload→extract→export HTTP round trip)
 that skip cleanly when the sample PDFs aren't present, same as golden/anchors.
 `python tablekit_tests/snapshot.py` regenerates the golden snapshot after a
-*deliberate, verified* change.
+*deliberate, verified* change. `conftest.py` redirects `serve.SESSION_DIR` to
+a throwaway directory for every test (autouse) so the session-autosave added
+alongside manual mode never writes into the real `uploads/.sessions/`.
+
+`tablekit_tests/js/test_webui_logic.js` covers `webui.html`'s PURE logic --
+`fmt()`, `t()`/i18n interpolation, the en/ar key-symmetry check, `kindName()`,
+`isRisky()` -- by running the real inline `<script>` inside a loose DOM stub
+(`dom_stub.js`), not a reimplementation of it and not a real browser. `node
+--test tablekit_tests/js/`, zero npm dependencies (Node's own test runner).
+This deliberately does NOT cover rendering, layout, or click-driven flows --
+this project doesn't pull in a browser-automation dependency (Playwright/
+Puppeteer) for that; changes to those are verified by hand in a real browser
+before merging.

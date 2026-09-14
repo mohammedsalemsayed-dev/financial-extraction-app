@@ -25,7 +25,7 @@ import extract_all_tables as X       # noqa: E402
 import serve                          # noqa: E402
 from tablekit.img2table_backend import (   # noqa: E402
     _Region, _split_glued_cell, _normalize_row_width, _merge_stacked,
-    _merge_side_by_side, _drop_prose_columns, rows_in_box, HAVE_IMG2TABLE,
+    _drop_prose_columns, rows_in_box, HAVE_IMG2TABLE,
 )
 
 
@@ -455,8 +455,8 @@ def test_scan_stops_early_when_progress_callback_requests_cancel():
     # an empty pdfs list can't exercise the per-page loop; verify instead
     # against a real sample if present, else just check the signature accepts it
     if (ROOT / "du annual 2025.pdf").exists():
-        out = X.scan([ROOT / "du annual 2025.pdf"], range(0, 5), 2, 2,
-                     warn=lambda m: None, progress=progress)
+        X.scan([ROOT / "du annual 2025.pdf"], range(0, 5), 2, 2,
+               warn=lambda m: None, progress=progress)
         assert calls and max(calls) <= 1   # never progressed past the cancel point
     else:
         pytest.skip("no sample PDF present")

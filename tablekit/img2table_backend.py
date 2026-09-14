@@ -587,7 +587,7 @@ def _ocr_left_labels(crop_pil, table_x1_px, cx0, cy0, row_bands):
         txt = (txt or "").strip()
         if not txt:
             continue
-        left, top, w, h = (data["left"][i], data["top"][i],
+        left, top, _, h = (data["left"][i], data["top"][i],
                            data["width"][i], data["height"][i])
         words.append({
             "text": txt,

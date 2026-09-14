@@ -8,12 +8,53 @@ on:
       - "telecom_extract.py"
       - "tablekit/**"
       - "tablekit_tests/**"
+      - "webui.html"
+      - "run_app.bat"
       - "requirements.txt"
+      - "pyproject.toml"
       - ".github/workflows/tests.yml"
   pull_request:
   workflow_dispatch:
 
 jobs:
+  launcher-sanity:
+    # run_app.bat silently pointed at a pre-rewrite, superseded app for an
+    # unknown number of commits (see CHANGELOG.md 0.5.0 / archive/README.md)
+    # before anyone noticed -- nothing caught that at the time. This is the
+    # guardrail so that class of drift fails CI instead of waiting for
+    # someone to notice the launcher opens the wrong thing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: grep -q "serve.py" run_app.bat || (echo "run_app.bat no longer launches serve.py" && exit 1)
+
+  lint:
+    # Pyflakes only (see pyproject.toml's [tool.ruff.lint] for why) -- real
+    # correctness bugs (unused imports/vars, undefined names), not style.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check extract_all_tables.py serve.py telecom_extract.py tablekit/ tablekit_tests/
+
+  frontend-logic:
+    # webui.html's PURE logic (i18n lookup/interpolation, number/currency
+    # formatting, the risky-table check) -- runs the real inline <script> in
+    # a DOM stub, not a browser (see tablekit_tests/js/dom_stub.js for why
+    # this project doesn't pull in a browser-automation dependency for
+    # rendering/click coverage instead). Zero npm dependencies: Node's own
+    # built-in test runner.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --test tablekit_tests/js/
+
   pytest:
     runs-on: ubuntu-latest
     strategy:

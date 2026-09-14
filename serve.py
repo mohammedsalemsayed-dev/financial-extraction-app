@@ -16,6 +16,7 @@ import base64
 import io
 import json
 import logging
+import pickle
 import re
 import socket
 import sys
@@ -36,6 +37,7 @@ from tablekit.parse import FormattedNumber  # noqa: E402
 HTML = ROOT / "webui.html"
 LOG = logging.getLogger("tablekit.serve")
 UPLOAD_DIR = ROOT / "uploads"
+SESSION_DIR = UPLOAD_DIR / ".sessions"
 
 STMT = ("income statement", "statement of financial position",
         "statement of cash flows", "statement of changes in equity")
@@ -52,10 +54,54 @@ _state = {
     "pages": None,               # optional page range (0-based) applied to every scan
     "scans": {},                 # name -> {"mtime": float, "tables": [...], "warn": [...]}
     "manual": {},                 # name -> [table dict or None (deleted), ...]
+    "deleted": {},                # name -> [idx, idx, ...] most-recent-last, for undelete
     "pngs": {},                  # (name, n, scale) -> bytes
     "pagetext": {},               # name -> [page1 text, page2 text, ...]  for search
 }
 _lock = threading.RLock()
+
+
+# ------------------------------------------------------------- session save ---
+# Manual extractions + hand-corrected edits are the expensive-to-reproduce
+# part of a session (drawing boxes, fixing OCR misreads cell by cell) -- the
+# auto-scan cache is cheap to regenerate and deliberately NOT persisted here.
+# Pickle, not JSON: table dicts carry FormattedNumber cells and internal-only
+# "_"-prefixed keys, and this file is only ever written and read by this same
+# process in a directory it controls -- the same trust boundary as the PDFs
+# themselves, so pickle's arbitrary-code-on-load risk doesn't add anything new.
+def _session_path(name):
+    return SESSION_DIR / (name + ".pkl")
+
+
+def _save_session(name):
+    with _lock:
+        snapshot = {"manual": list(_manual_list(name)),
+                    "deleted": list(_deleted_list(name))}
+    try:
+        SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _session_path(name).with_suffix(".pkl.tmp")
+        with open(tmp, "wb") as f:
+            pickle.dump(snapshot, f)
+        tmp.replace(_session_path(name))          # atomic on the same filesystem
+    except Exception:
+        LOG.exception("could not save session for %s", name)
+
+
+def _load_session(name):
+    p = _session_path(name)
+    if not p.exists():
+        return
+    try:
+        with open(p, "rb") as f:
+            snapshot = pickle.load(f)
+        with _lock:
+            _state.setdefault("manual", {})[name] = snapshot.get("manual", [])
+            _state.setdefault("deleted", {})[name] = snapshot.get("deleted", [])
+        n_live = sum(1 for t in _state["manual"][name] if t is not None)
+        if n_live:
+            LOG.info("  restored %d saved table(s) for %s", n_live, name)
+    except Exception:
+        LOG.exception("could not load session for %s -- starting fresh", name)
 
 
 # --------------------------------------------------------------------- scan ---
@@ -148,6 +194,11 @@ def _manual_list(name):
     return _state.setdefault("manual", {}).setdefault(name, [])
 
 
+def _deleted_list(name):
+    # same defensive pattern as _manual_list, for the undo-delete stack
+    return _state.setdefault("deleted", {}).setdefault(name, [])
+
+
 def _resolve(name, n):
     """n > MANUAL_OFFSET addresses a manually-extracted table; otherwise it's
     a 1-based index into `scan_file`'s results. The web UI has no route left
@@ -174,7 +225,9 @@ def delete_manual(name, n):
     than removing from the list, so every OTHER manual table's "n" (which
     encodes its list position) stays valid -- removing outright would shift
     every later entry's effective index and silently repoint any selection
-    or edit state the browser still has cached under the old number."""
+    or edit state the browser still has cached under the old number.
+    The (index, table) pair is pushed onto a small per-file undo stack
+    BEFORE the slot is cleared, so `undelete_manual` can put it back."""
     if n <= MANUAL_OFFSET:
         raise KeyError(n)
     idx = n - MANUAL_OFFSET - 1
@@ -182,7 +235,29 @@ def delete_manual(name, n):
         manual = _manual_list(name)
         if not (0 <= idx < len(manual)) or manual[idx] is None:
             raise KeyError(n)
+        _deleted_list(name).append((idx, manual[idx]))
         manual[idx] = None
+    _save_session(name)
+
+
+def undelete_manual(name):
+    """Restore the most recently deleted table for this file, if any.
+    Returns the restored table's app-wide "n", or None if there was nothing
+    left on the undo stack to restore."""
+    with _lock:
+        stack = _deleted_list(name)
+        manual = _manual_list(name)
+        while stack:
+            idx, table = stack.pop()
+            if 0 <= idx < len(manual) and manual[idx] is None:
+                manual[idx] = table
+                n = MANUAL_OFFSET + idx + 1
+                _save_session(name)
+                return n
+            # slot no longer empty (shouldn't normally happen -- new
+            # extractions always append, never reuse a cleared index) --
+            # fall through and try the next entry on the stack instead
+    return None
 
 
 def page_count(name):
@@ -293,8 +368,18 @@ def quick_find_statements(name):
             for label, _ in _QUICKFIND_PATTERNS if label in found]
 
 
+def _sanitize_filename(name):
+    """Keep Unicode letters/digits plus a small set of safe punctuation;
+    everything else becomes "_". str.isalnum() is Unicode-aware (unlike re's
+    \\w, which Python's stdlib `re` -- no \\p{L} support here -- would need
+    a regex to fake), so an Arabic filename survives this unchanged instead
+    of collapsing into underscores. Mirrors the export-filename sanitiser in
+    webui.html so the same file round-trips the same way on both ends."""
+    return "".join(c if (c.isalnum() or c in " .()-") else "_" for c in name)
+
+
 def upload_pdf(filename, data_b64):
-    safe = re.sub(r"[^\w .()-]", "_", Path(filename or "upload.pdf").name) or "upload.pdf"
+    safe = _sanitize_filename(Path(filename or "upload.pdf").name) or "upload.pdf"
     if not safe.lower().endswith(".pdf"):
         safe += ".pdf"
     UPLOAD_DIR.mkdir(exist_ok=True)
@@ -306,6 +391,7 @@ def upload_pdf(filename, data_b64):
     dest.write_bytes(base64.b64decode(data_b64))
     with _lock:
         _state["files"].append(dest)
+    _load_session(dest.name)      # picks up a prior run's saved work, if any
     return dest.name
 
 
@@ -320,6 +406,7 @@ def extract_region(name, page1, bbox, title=None):
         manual = _manual_list(name)
         manual.append(t)
         idx = len(manual)
+    _save_session(name)
     return _detail(t, MANUAL_OFFSET + idx)
 
 
@@ -334,6 +421,7 @@ def extract_region_ocr(name, page1, bbox, title=None):
         manual = _manual_list(name)
         manual.append(t)
         idx = len(manual)
+    _save_session(name)
     return _detail(t, MANUAL_OFFSET + idx)
 
 
@@ -441,17 +529,30 @@ def table_detail(name, n):
 
 def reanalyze(name, n, rows, title=None):
     """Apply an in-progress edit (raw cells) and return a fresh detail dict --
-    verdicts / health recomputed by the engine, cells parsed by the engine."""
+    verdicts / health recomputed by the engine, cells parsed by the engine.
+    Also COMMITS the edit back into the manual table list (when `n`
+    addresses one -- the normal case from the browser; the auto-scan branch
+    stays transient, same as before) and flushes it to disk, so the edit
+    survives a page refresh or a server restart, not just the final export.
+    The browser already debounces calls here (450ms after the user stops
+    typing), so each commit represents a real pause, not a keystroke."""
     base = _resolve(name, n)
     t2 = _edit_one(base, {"rows": rows, "title": title})
+    if n > MANUAL_OFFSET:
+        idx = n - MANUAL_OFFSET - 1
+        with _lock:
+            manual = _manual_list(name)
+            if 0 <= idx < len(manual) and manual[idx] is not None:
+                manual[idx] = t2
+        _save_session(name)
     return _detail(t2, n)
 
 
 def compare(name_a, n_a, name_b, n_b):
     ta = _resolve(name_a, n_a)
     tb = _resolve(name_b, n_b)
-    drows, verdict = X.diff_tables(ta, tb)
-    return {"verdict": verdict, "rows": drows,
+    drows, verdict, counts = X.diff_tables(ta, tb)
+    return {"verdict": verdict, "counts": counts, "rows": drows,
             "a": {"file": name_a, "title": ta.get("title"), "years": ta.get("years")},
             "b": {"file": name_b, "title": tb.get("title"), "years": tb.get("years")}}
 
@@ -583,7 +684,7 @@ class Handler(BaseHTTPRequestHandler):
             # reachable from the UI: every sidebar control used to be
             # clickable before a file was ever chosen)
             if u.path in ("/api/reanalyze", "/api/extract_region", "/api/extract_region_ocr",
-                         "/api/export", "/api/delete_manual"):
+                         "/api/export", "/api/delete_manual", "/api/undelete_manual"):
                 name = payload.get("file")
                 if not name or _path(name) is None:
                     return self._send(400, {"error": "No file selected -- upload a PDF first."})
@@ -636,6 +737,13 @@ class Handler(BaseHTTPRequestHandler):
                 except KeyError:
                     return self._send(404, {"error": "that table is already gone"})
                 return self._send(200, inventory(payload["file"]))
+            if u.path == "/api/undelete_manual":
+                n = undelete_manual(payload["file"])
+                if n is None:
+                    return self._send(404, {"error": "nothing to undo"})
+                inv = inventory(payload["file"])
+                inv["restored_n"] = n
+                return self._send(200, inv)
             return self._send(404, {"error": "not found"})
         except Exception as e:
             LOG.exception("POST %s failed", self.path)
@@ -653,8 +761,14 @@ def _free_port(start=8765, tries=20):
     raise RuntimeError("no free port in range")
 
 
-def run(pdf_args, host="127.0.0.1", port=None, open_browser=True):
-    logging.basicConfig(level=logging.INFO, format="  %(message)s")
+def _discover_files(pdf_args):
+    """CLI-arg files (or every *.pdf in a given directory) PLUS whatever a
+    previous run already uploaded to UPLOAD_DIR -- without the latter,
+    launching with no arguments (the normal run_app.bat path) always starts
+    on a blank onboarding screen even when uploads/ still has last session's
+    PDF sitting right there, which would make session persistence pointless
+    (the file wouldn't even be listed). De-duplicated by resolved path,
+    CLI-arg order wins."""
     files = []
     for a in pdf_args:
         p = Path(a)
@@ -664,7 +778,21 @@ def run(pdf_args, host="127.0.0.1", port=None, open_browser=True):
             files.append(p)
         else:
             LOG.warning("skipping %s (not a PDF)", a)
+    seen = {f.resolve() for f in files}
+    if UPLOAD_DIR.is_dir():
+        for p in sorted(UPLOAD_DIR.glob("*.pdf")):
+            if p.resolve() not in seen:
+                files.append(p)
+                seen.add(p.resolve())
+    return files
+
+
+def run(pdf_args, host="127.0.0.1", port=None, open_browser=True):
+    logging.basicConfig(level=logging.INFO, format="  %(message)s")
+    files = _discover_files(pdf_args)
     _state["files"] = files
+    for f in files:
+        _load_session(f.name)
     port = port or _free_port()
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{host}:{port}/"

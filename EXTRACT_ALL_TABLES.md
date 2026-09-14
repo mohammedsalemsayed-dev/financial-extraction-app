@@ -34,6 +34,11 @@ consistency banner.
 - **Double-click a cell** to fix a wrong label or figure; **hover a row** for
   insert / delete / split / merge-up. The verdict and health **re-compute live**
   as you type — all parsing happens on the server, not in the browser.
+  **↺ Undo edit** steps back one change at a time.
+- Every extraction and edit is **autosaved** — closing the tab, refreshing,
+  or restarting the app picks up right where you left off, including which
+  tables were ticked and the workbook name. Deleted a table by mistake? The
+  "Table removed" toast has an **Undo**.
 - **Swap year columns**, rename the sheet, set the workbook filename.
 - Tick several, reorder them in the **Export order** tray, and **Export N →**
   downloads **one** `.xlsx` (one sheet each + a Contents index). Export warns if

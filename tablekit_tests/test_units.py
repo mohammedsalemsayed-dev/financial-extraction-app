@@ -9,8 +9,6 @@ They exercise the analysis layer on hand-built table dicts:
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import extract_all_tables as X  # noqa: E402

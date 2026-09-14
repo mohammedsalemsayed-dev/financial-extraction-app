@@ -1,5 +1,109 @@
 # Changelog
 
+## 0.6.0
+
+### Session persistence -- the big one
+- `serve.py` used to hold every manually-extracted table and every hand-typed
+  edit in a plain in-memory dict. A server restart (or a page refresh, for
+  in-progress edits specifically -- `reanalyze()` never wrote them back
+  anywhere) lost all of it, silently, with no warning. Fixed:
+  `_save_session`/`_load_session` (pickle, not JSON -- table dicts carry
+  `FormattedNumber` cells and internal `_`-prefixed keys; this file is only
+  ever written and read by this same process, so pickle's arbitrary-code-
+  on-load risk doesn't add anything new) snapshot a file's manual tables to
+  `uploads/.sessions/<file>.pkl` (atomic tmp-then-rename write) after every
+  extraction, edit, delete, and undelete. `reanalyze()` now COMMITS the edit
+  into the manual list instead of just returning a transient preview.
+  `run_app.bat`'s new no-args launch (see 0.5.0) now also rediscovers
+  whatever's already sitting in `uploads/` (`_discover_files`), so the
+  session it restores is actually reachable.
+- Table deletion was already a tombstone (index kept, so other tables' `n`
+  never shifts) but threw the deleted table's CONTENT away with no way back.
+  `undelete_manual` + a per-file undo stack (`(idx, table)` pairs) makes
+  "Table removed. [Undo]" a real, working toast action.
+- Cell/row edits (insert/delete/split/merge-up/swap-years) get a step-back
+  undo too (`snapshotForUndo`/`undoLastEdit`, a capped 20-entry stack per
+  table) via an "↺ Undo edit" toolbar button -- deliberately a button, not a
+  global Ctrl+Z: a table cell is `contenteditable` with its OWN native
+  browser undo, and hijacking Tab/Ctrl+Z globally would fight that instead
+  of complementing it.
+- The export tray's selection/order and the workbook name are cheap-to-redo
+  browser preferences (not authoritative data), so those are mirrored to
+  `localStorage` per file and restored silently on load -- no confirm
+  prompt, since worst case is re-ticking a checkbox.
+- `upload_pdf`'s filename sanitiser was still the ASCII-only ripped-out-and-
+  reapplied ancestor of the fix already applied to the EXPORT filename last
+  session -- an Arabic-named upload was getting mangled into underscores on
+  the way IN even though it round-tripped fine on the way out. Fixed
+  (`_sanitize_filename`, Unicode-aware via `str.isalnum()` rather than
+  fighting `re`'s lack of `\p{L}` support).
+
+### Testing
+- `tablekit_tests/js/test_webui_logic.js` -- the first automated coverage of
+  `webui.html`'s frontend logic (`fmt()`, `t()`/i18n interpolation, an
+  en/ar key-symmetry check, `kindName()`, `isRisky()`). Runs the REAL inline
+  `<script>` inside a loose DOM stub (`dom_stub.js`), not a reimplementation
+  and not a real browser -- deliberately no Playwright/Puppeteer dependency;
+  see docs/PIPELINE.md. `node --test tablekit_tests/js/`, zero npm deps,
+  now CI-gated (`frontend-logic` job).
+- `conftest.py` (new): autouse fixture redirects `serve.SESSION_DIR` to a
+  tmp dir for every test, so the autosave added above never writes into the
+  real `uploads/.sessions/`.
+- `ruff` wired in CI (`lint` job), scoped to pyflakes only (`select = ["F"]`
+  in pyproject.toml) -- real correctness bugs, not this codebase's own
+  established style (short reused names, semicolon one-liners) fighting a
+  broader ruleset for no bug-catching benefit. Found and fixed: a fully
+  dead function (`extract_all_tables.page_labels` -- zero callers anywhere,
+  its own `pypdf` read was constructed and immediately discarded), four
+  more unused-variable/import cases, two pointless f-string prefixes.
+  (One near-miss: pyflakes also flagged `parse_number` as unused within
+  `extract_all_tables.py` -- correctly, by its own single-file view, but
+  that import is a DELIBERATE re-export `tablekit_tests/test_golden.py`
+  depends on via `X.parse_number()`; restored with a documented
+  `noqa: F401` rather than removed.)
+- `launcher-sanity` CI job: greps `run_app.bat` for `serve.py`. The exact
+  drift from 0.5.0 (the launcher silently pointing at a dead pre-rewrite
+  app) now fails CI instead of waiting for someone to notice by hand.
+- `serve.compare()`'s new `counts` field (see below) gets its own assertion
+  in `test_compare_returns_a_diff`, which needed a real fix along the way:
+  the test's two fake tables both claimed the same year pair, so the
+  "restated" branch (A's PRIOR year vs B's CURRENT year) could never fire
+  no matter how different the figures were -- the original loose
+  `"changed" in verdict or "RESTATED" in verdict` assertion had been
+  quietly tolerating that. Fixed the fixture to use an actually-offset year
+  pair, matching the real use case (this year's report vs last year's).
+
+### Compare-panel verdict, partially localized
+- `diff_tables()` now returns `(rows, verdict, counts)` -- `counts` is the
+  same result as plain numbers (`changed`/`new`/`removed`/`restated`)
+  alongside the existing English `verdict` sentence, which stays as-is for
+  the CLI/xlsx output. `webui.html` builds a translated sentence from
+  `counts` when present (`cmpVerdictRestated`/`cmpVerdictClean` i18n keys),
+  falling back to the raw English string against an older server response.
+  This is NOT the larger project of localizing every server-generated
+  string (a table's `notes`, `reconcile_explain`) -- see the comment above
+  `I18N` in webui.html for why that's a separate, bigger change to
+  `extract_all_tables.py`'s prose generation; this is the one contained
+  piece of it that was safe to do without touching the trust layer.
+
+### Accessibility
+- Icon-only controls (theme toggle, the export tray's ↑/↓/× buttons, every
+  toast's × dismiss, the row-editor's ＋/✕/⤶/⭡ buttons) now carry
+  `aria-label` alongside their existing `title` -- title alone isn't
+  reliably announced, and several of these have no visible text for a
+  screen reader to fall back on.
+- The confirm modal (`showModal`) now has `role="dialog"`, `aria-modal`,
+  `aria-labelledby`, and an actual focus trap (Tab/Shift+Tab wrap between
+  its two buttons instead of leaking focus into the page behind it).
+
+### Multi-file queue
+- The file `<select>` (previously hidden entirely until a second file was
+  loaded, and unstyled) now shows each file's extracted-table count in its
+  label and gets real styling matching the rest of the header. Not batch
+  AUTOMATION -- that would need auto-detection back, which was removed for
+  being unreliable (see 0.5.0) -- just visibility into which of several
+  loaded files still need manual work.
+
 ## 0.5.0
 
 ### "Auto-detect all tables" fully removed

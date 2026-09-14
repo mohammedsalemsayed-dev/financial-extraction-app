@@ -9,7 +9,6 @@ import io
 import json
 import sys
 import threading
-import time
 import urllib.request
 from pathlib import Path
 
@@ -135,11 +134,18 @@ def test_reanalyze_parses_cells_server_side(wired):
 
 
 def test_compare_returns_a_diff(wired, monkeypatch):
-    # two files, same statement, one figure restated
-    a = _make_tables()
-    b = _make_tables()
-    b[0]["rows"] = [r[:] for r in b[0]["rows"]]
-    b[0]["rows"][1][2] = 850_000                  # b's 2023 Revenue differs
+    # two files, same statement, one figure restated. diff_tables() only
+    # flags "restated" when A's PRIOR year lines up with B's CURRENT year
+    # (comparing this year's report against last year's, the real use
+    # case) -- so B must report the YEAR BEFORE A's, not the same pair, or
+    # the restated branch can never fire no matter how different the figures.
+    a = _make_tables()                                  # years [2024, 2023]
+    b_rows = _pl([2023, 2022], rev=850_000)             # b's "2023" is a's "2023" restated
+    b_table = {"rows": b_rows, "title": "Statement of profit or loss", "file": "demo.pdf",
+               "page_label": 5, "page": 5, "shape": X.classify(b_rows),
+               "bbox": [10, 10, 300, 400], "page_size": [595, 842]}
+    X.analyze(b_table); X._attach_health(b_table)
+    b = [b_table]
     files = {"a.pdf": a, "b.pdf": b}
     monkeypatch.setattr(serve, "_state",
                         {"files": [Path("a.pdf"), Path("b.pdf")],
@@ -148,6 +154,93 @@ def test_compare_returns_a_diff(wired, monkeypatch):
     out = serve.compare("a.pdf", 1, "b.pdf", 1)
     assert out["rows"][0][0] == "Line item"
     assert "changed" in out["verdict"] or "RESTATED" in out["verdict"]
+    # `counts` is what the UI uses to build a TRANSLATED verdict sentence
+    # instead of hard-coded English (webui.html's renderComparePanel) -- the
+    # numbers behind it must agree with what the English verdict prose says
+    for key in ("changed", "new", "removed", "restated"):
+        assert key in out["counts"] and isinstance(out["counts"][key], int)
+    assert out["counts"]["restated"] >= 1               # b's 2023 Revenue was restated
+    assert f"{out['counts']['restated']} RESTATED" in out["verdict"]
+
+
+# ---- session persistence (autosave / restart-survival / undo) -----------
+def test_reanalyze_commits_the_edit_into_the_manual_list(wired):
+    t = _make_tables()[0]
+    serve._manual_list("demo.pdf").append(t)
+    n = serve.MANUAL_OFFSET + 1
+    d0 = serve.table_detail("demo.pdf", n)
+    rows = [r[:] for r in d0["rows"]]
+    rows[1][0] = "Turnover"
+    serve.reanalyze("demo.pdf", n, rows)
+    # NOT just returned to the caller -- actually committed server-side, so
+    # a second, independent read (e.g. after a page refresh) sees the edit
+    assert serve._manual_list("demo.pdf")[0]["rows"][1][0] == "Turnover"
+
+
+def test_session_survives_a_simulated_restart(wired):
+    t = _make_tables()[0]
+    serve._manual_list("demo.pdf").append(t)
+    serve._save_session("demo.pdf")
+    # simulate a process restart: nothing left in memory for this file
+    serve._state["manual"]["demo.pdf"] = []
+    serve._state["deleted"]["demo.pdf"] = []
+    serve._load_session("demo.pdf")
+    restored = serve._manual_list("demo.pdf")
+    assert len(restored) == 1
+    assert restored[0]["title"] == t["title"]
+    assert restored[0]["rows"] == t["rows"]
+
+
+def test_delete_then_undelete_restores_the_same_table(wired):
+    t = _make_tables()[0]
+    serve._manual_list("demo.pdf").append(t)
+    n = serve.MANUAL_OFFSET + 1
+    serve.delete_manual("demo.pdf", n)
+    assert serve._manual_list("demo.pdf")[0] is None
+    with pytest.raises(KeyError):
+        serve._resolve("demo.pdf", n)
+    restored_n = serve.undelete_manual("demo.pdf")
+    assert restored_n == n
+    assert serve._resolve("demo.pdf", n)["title"] == t["title"]
+
+
+def test_undelete_with_nothing_to_undo_returns_none(wired):
+    assert serve.undelete_manual("demo.pdf") is None
+
+
+def test_upload_pdf_keeps_a_unicode_filename(wired, monkeypatch, tmp_path):
+    monkeypatch.setattr(serve, "UPLOAD_DIR", tmp_path / "uploads")
+    import base64
+    name = serve.upload_pdf("تقرير 2024.pdf", base64.b64encode(b"%PDF-1.4 fake").decode())
+    assert name == "تقرير 2024.pdf"
+
+
+def test_upload_pdf_still_strips_path_separators_and_reserved_chars(
+        wired, monkeypatch, tmp_path):
+    monkeypatch.setattr(serve, "UPLOAD_DIR", tmp_path / "uploads")
+    import base64
+    name = serve.upload_pdf("a/b\\c:d*e?.pdf", base64.b64encode(b"%PDF-1.4 fake").decode())
+    assert "/" not in name and "\\" not in name and ":" not in name
+
+
+def test_discover_files_rediscovers_previously_uploaded_pdfs(monkeypatch, tmp_path):
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    old = uploads / "last session.pdf"
+    old.write_bytes(b"%PDF-1.4 fake")
+    monkeypatch.setattr(serve, "UPLOAD_DIR", uploads)
+    files = serve._discover_files([])          # no CLI args -- the run_app.bat path
+    assert old.resolve() in {f.resolve() for f in files}
+
+
+def test_discover_files_does_not_duplicate_a_cli_arg_already_in_uploads(monkeypatch, tmp_path):
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    pdf = uploads / "report.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    monkeypatch.setattr(serve, "UPLOAD_DIR", uploads)
+    files = serve._discover_files([str(pdf)])
+    assert len(files) == 1
 
 
 def test_free_port_returns_an_open_port():

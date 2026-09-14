@@ -36,10 +36,13 @@ from openpyxl.utils import get_column_letter
 # --------------------------------------------------------------------- config ---
 # CONFIG + its TOML override loader live in tablekit/config.py; parse_number /
 # cell coercion in tablekit/parse.py.  Imported here so `import extract_all_tables`
-# keeps exposing all of them.
+# keeps exposing all of them -- parse_number itself isn't called from
+# anywhere else IN this file (hence the noqa: F401 below), but
+# tablekit_tests/test_golden.py calls it as X.parse_number(), so it's a
+# deliberate re-export, not dead weight.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tablekit.config import CONFIG, load_config_overrides   # noqa: E402
-from tablekit.parse import (parse_number, coerce_cell as _cell,  # noqa: E402
+from tablekit.parse import (parse_number, coerce_cell as _cell,  # noqa: E402,F401
                             normspace as _txt, NUM_RE as _NUM_RE, FormattedNumber)
 
 load_config_overrides()
@@ -1082,7 +1085,7 @@ def analyze(t, page_years=None, doc_years=None):
             elif kind == "statement of changes in equity":
                 ok = _equity_foots(data, c)
                 if ok is not None:
-                    line = f"closing balance = opening + Σ movements"
+                    line = "closing balance = opening + Σ movements"
                     # equity columns are Share capital / Retained earnings /
                     # Total etc, not years -- use the real header text once
                     # there's no year left to label a column with
@@ -1735,7 +1738,13 @@ def diff_tables(ta, tb):
                          round(dp, 1) if dp is not None else None, restated, status])
     verdict = (f"{n_changed} changed, {n_new} new, {n_gone} removed"
                + (f", {n_restated} RESTATED" if n_restated else ", prior-year columns agree"))
-    return out_rows, verdict
+    # `verdict` above is the CLI/xlsx-facing English sentence; `counts` is the
+    # same result as plain numbers so a caller that wants translated UI text
+    # (see webui.html's renderComparePanel) can build its own sentence from
+    # them instead of hard-coding English -- see the note above I18N in
+    # webui.html for why the verdict PROSE itself isn't machine-translated.
+    counts = {"changed": n_changed, "new": n_new, "removed": n_gone, "restated": n_restated}
+    return out_rows, verdict, counts
 
 
 # --------------------------------------------------------------------- write ---
@@ -1896,7 +1905,7 @@ def build_compare_workbook(pairs, meta):
 
     used = set()
     for n, (ta, tb) in enumerate(pairs, 1):
-        drows, verdict = diff_tables(ta, tb)
+        drows, verdict, _counts = diff_tables(ta, tb)
         sn = safe_sheet_name((ta.get("title") or ta["kind"]) + f" diff ({n})", used)
         ws = wb.create_sheet(title=sn)
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=9)
@@ -1941,14 +1950,6 @@ def gather(inputs, recursive):
             print(f"  SKIP: {p}")
     return out
 
-
-def page_labels(pdf):
-    try:
-        from pypdf import PdfReader
-        r = PdfReader(str(pdf.stream.name)) if hasattr(pdf.stream, "name") else None
-    except Exception:
-        r = None
-    return None  # keep it simple: use physical page numbers
 
 
 def _parse_selection(spec, n):
@@ -2056,7 +2057,6 @@ def scan(pdfs, pr, min_rows, min_cols, warn=print, progress=None):
                 # years the page itself talks about ('for the year ended 2021'
                 # / column headers) -- used only when a table has no header row
                 from collections import Counter
-                py = [y for y in _years_in(ptext)]
                 pcnt = Counter(re.findall(r"\b(?:19|20)\d{2}\b", ptext))
                 page_years = [int(y) for y, _ in pcnt.most_common(3)
                               if 1990 <= int(y) <= 2035][:2]
@@ -2175,7 +2175,7 @@ def main():
             print("No comparable tables matched between the two files."); sys.exit(0)
         print(f"\n  matched {len(pairs)} table(s):")
         for ta, tb in pairs:
-            drows, verdict = diff_tables(ta, tb)
+            drows, verdict, _counts = diff_tables(ta, tb)
             print(f"    {ta['kind']:<32} {ta.get('title','')[:40]:<42} -> {verdict}")
         out = Path(args.out) if args.out else pdfs[0].with_name(
             pdfs[0].stem + "_vs_" + pdfs[1].stem + "_diff.xlsx")
@@ -2214,7 +2214,7 @@ def main():
 
     if args.list:
         print(f"  {len(tables)} table(s).  Re-run with  --only <numbers>  to export a subset,")
-        print(f"  or without --list to export all.")
+        print("  or without --list to export all.")
         return
 
     picked = tables

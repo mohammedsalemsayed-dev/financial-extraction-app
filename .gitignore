@@ -6,6 +6,7 @@
 __pycache__/
 _t/
 archive/financial_extract/session/
+uploads/.sessions/
 
 # Editor and operating-system files
 .DS_Store
