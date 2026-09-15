@@ -30,13 +30,30 @@ PDF ─► scan()                                    [extract_all_tables.py]
 
 PDF ─► extract_region(pdf, page, bbox)            [extract_all_tables.py -- manual box-select]
         │   img2table_page_tables(pdf, page)       run img2table on the WHOLE page, uncropped
+        │     ├─ _unscramble_reversed_paren_wrap    fix up a raw cell value BEFORE it's used --
+        │     │    (per cell, on the raw value)       a negative number whose digits got split
+        │     │                                       across two lines AND line-reversed by the
+        │     │                                       same bidi artifact as ")1,234(" (rare, but
+        │     │                                       parse_number can't recover it once normspace
+        │     │                                       has already collapsed the newline to a space)
+        │     └─ _looks_like_two_fused_statements    refuse (drop) a region already carrying
+        │          (per region, on its rows)           primary-statement vocabulary from two
+        │                                               DIFFERENT statement kinds -- img2table's
+        │                                               OWN clustering can fuse two unrelated
+        │                                               full-page tables on a 2-column landscape
+        │                                               page before any of this project's own
+        │                                               merge code below ever runs, so there's no
+        │                                               explicit merge here to guard instead
         │   rows_in_box(page_tables, bbox)         [tablekit/img2table_backend.py]
         │     ├─ candidate region(s) with >=50%    reject a region only clipped at the box's
         │     │  overlap with the drawn box          edge (stops a generous box from dragging
         │     │                                       in an unrelated neighbouring table)
         │     ├─ _merge_side_by_side / _merge_stacked   re-join img2table's own split pieces
         │     │    (X-aligned only, since 0.4.0 -- stacking must not glue two DIFFERENT
-        │     │     notes together just because they're Y-adjacent with matching column count)
+        │     │     notes together just because they're Y-adjacent with matching column count;
+        │     │     side-by-side skips joining two regions that EACH already have their own
+        │     │     label column, since 0.7.8 -- that's the signature of two independently-
+        │     │     complete tables, not one table's labels half and figures half)
         │     └─ trim rows to the box's Y-range     protects against a stacking merge pulling
         │          (+ small margin), report bbox     in the START of the next section; the
         │          from the SURVIVING rows only      highlight shown back is always faithful
@@ -136,9 +153,13 @@ number that now means something else in the new file. See
 | a manually-drawn box returns nothing / wrong content | `tablekit/img2table_backend.py` `rows_in_box` (`min_overlap_frac`, `row_margin`); `_merge_stacked`'s `x_tol` |
 | OCR misreads / drops digits from a scanned box | `tablekit/img2table_backend.py` `ocr_rows_in_box`'s `pad` (crop margin before Tesseract runs -- too tight clips characters) |
 | a real statement listed as "table" | `_is_structural_non_statement`, `_looks_like_not_a_statement` |
-| wrong "foots" verdict | the per-kind block in `analyze`; `_reconciles` / `_cashflow_foots` tolerances in `CONFIG` |
+| wrong "foots" verdict | the per-kind block in `analyze`; `_reconciles` / `_cashflow_foots` / `_equity_foots` tolerances in `CONFIG` -- for a changes-in-equity false negative specifically, check whether a "Total ..." subtotal row is getting summed as if it were its own movement (`_equity_foots`'s exclusion regex) |
 | a figure is wrong | `tablekit/parse.py` `parse_number` + `test_parse_number` |
-| two adjacent numbers glued into one cell | `tablekit/img2table_backend.py` `_split_glued_cell` / `_normalize_row_width` |
+| several rows merged into one garbled cell (newline-joined, several pieces each look like a number) | `extract_all_tables.py` `_looks_garbled` -- refuses the pdfplumber-fallback result rather than show it |
+| numbers glued with NO separator at all (`2020202020192019`) | `tablekit/parse.py` `parse_number`'s space-token grouped-number check, and the absurd-digit-run backstop right after it |
+| two adjacent numbers glued into one cell (WITH a separator) | `tablekit/img2table_backend.py` `_split_glued_cell` / `_normalize_row_width` -- also handles the reversed-parens form, `)87,579( )11,915(` |
+| a negative number reads as `)1,234(` instead of `(1,234)` | `tablekit/parse.py` `parse_number` (bidi paren-reversal artifact); a rarer variant with the digits ALSO split across two reversed-order lines is `tablekit/img2table_backend.py` `_unscramble_reversed_paren_wrap` |
+| a table mixes columns from two clearly different statements (e.g. balance-sheet rows carrying equity-statement column headers) | `tablekit/img2table_backend.py` `_looks_like_two_fused_statements` -- img2table's own borderless-table clustering fused two unrelated regions; there's no safe split, so this refuses the whole region rather than serve it |
 | a label has prose in it | `_deprose_labels`, `_desect_labels`; check `label_health` flags it |
 | a threshold needs tuning | `tablekit/config.py` `CONFIG` (or `extract_all_tables.toml`) |
 | the UI | `serve.py` endpoints + `webui.html`/`webui.css`/`webui.js` |

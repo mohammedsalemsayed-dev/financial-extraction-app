@@ -198,8 +198,15 @@ enough to cover the statements in **both** files.)
 `parse_number()` is a standalone, unit-tested function. It accepts `1,234` ·
 `1,234.56` · `(1,234)` · `-1,234` · `1,234-` (trailing minus) · `1 234` (space
 thousands) · `1.234,56` (European) · `12.5%` · `$1,234` / `AED 1,234` ·
-`1,234 CR/DR` · trailing footnote marks (`1,234*`, `1,234¹`, `1,234 (a)`). A
-bare dash / `nil` / `n/a` is a blank, not a zero.
+`1,234 CR/DR` · trailing footnote marks (`1,234*`, `1,234¹`, `1,234 (a)`) ·
+`)1,234(` (parens reversed by a bidi text-ordering artifact in the source
+PDF — seen on real e&/Etisalat reports and `du annual 2019.pdf`). A bare
+dash / `nil` / `n/a` is a blank, not a zero. Several distinct numbers that
+ended up glued into the same cell with no real separator (a wrapped
+multi-line cell flattened to spaces, or a row-joining artifact upstream —
+`2020 2020 2019 2019` coming out as `2020202020192019`) are rejected rather
+than silently mashed into one digit blob — see `parse_number`'s own
+docstring for the exact grouped-number-shape check this relies on.
 
 ### Layout & config
 
@@ -210,13 +217,13 @@ Override thresholds from `extract_all_tables.toml` (or `$EXTRACT_TABLES_CONFIG`)
 `extract-tables` / `tablekit-serve` entry points. `docs/PIPELINE.md` is the
 maintainer's map. `-v` on the CLI turns on the diagnostics logger.
 
-### Tests — `pytest tablekit_tests/ -q` (97)
+### Tests — `pytest tablekit_tests/ -q` (179)
 
 | suite | needs PDFs? | what |
 |---|---|---|
 | `test_units.py` | no | analyze / label+figure health / cross-year / stitch / cash-flow, on hand-built tables |
 | `test_serve.py` | no* | inventory shape, inline edits, one-workbook export (*one HTTP end-to-end test uses a PDF if present) |
-| `test_golden.py` — `test_parse_number` | no | 34 printed-figure forms |
+| `test_golden.py` — `test_parse_number` | no | 39 printed-figure forms |
 | `test_golden.py` — `anchors.json` | yes | figures read **by hand from raw PDF text** — the independent check the snapshot can't give |
 | `test_golden.py` — `golden.json` | yes | snapshot of detector output on 14 reports (42 statements); fails on any kind / years / foots / shape / value change |
 
