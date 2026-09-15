@@ -61,6 +61,19 @@ def parse_number(raw):
     if s.startswith("(") and s.rstrip("*").rstrip().endswith(")"):
         neg = True
         s = s[s.index("(") + 1: s.rindex(")")]
+    elif s.startswith(")") and s.rstrip("*").rstrip().endswith("("):
+        # Some reports (Etisalat / e& especially, but also seen in du's own
+        # 2019 report) come out of PDF text extraction with the parenthesis
+        # PAIR itself reversed -- ")1,234(" -- a bidi-reordering artifact of
+        # the source PDF, not a different notation. The digits/commas inside
+        # stay in correct reading order; only the two paren characters swap
+        # visual position, so this is safe to treat exactly like the normal
+        # "(1,234)" negative marker. telecom_extract.clean_cell already
+        # special-cases this for the auto-detect path; this brings the same
+        # handling to parse_number, which the manual/box-select path (and
+        # everything else that calls coerce_cell) relies on instead.
+        neg = True
+        s = s[s.index(")") + 1: s.rindex("(")]
     m = re.search(r"\b(cr|dr)\b\.?$", s, re.I)               # credit / debit
     if m:
         neg = neg ^ (m.group(1).lower() == "cr")
@@ -87,6 +100,22 @@ def parse_number(raw):
     sign = -1 if str(raw).strip().startswith("-") else 1
     if not re.search(r"\d", s):
         return None
+    tokens = s.split()
+    if len(tokens) > 1:
+        # A real space-grouped number's thousands groups are always exactly
+        # 3 digits after the leading group ("1 234 567"). When the tokens
+        # don't fit that shape -- e.g. "2020 2020 2019 2019", four whole
+        # 4-digit years -- this isn't one grouped figure, it's several
+        # distinct numbers that ended up in the same cell (a wrapped
+        # multi-line cell flattened to spaces by normspace, or several rows
+        # collapsed into one upstream). Gluing those together would silently
+        # fabricate a number nobody printed, so refuse instead, same as
+        # _looks_garbled does for the newline-delimited version of this.
+        grouped = re.fullmatch(r"\d{1,3}", tokens[0]) and \
+            all(re.fullmatch(r"\d{3}", t) for t in tokens[1:-1]) and \
+            re.fullmatch(r"\d{3}(?:\.\d+)?", tokens[-1])
+        if not grouped and sum(1 for t in tokens if NUM_RE.match(t)) >= 2:
+            return None
     flat = s.replace(" ", "")
     if re.fullmatch(r"[\d.]*,\d{1,2}", flat):                # European 1.234,56
         flat = flat.replace(".", "").replace(",", ".")
@@ -94,7 +123,15 @@ def parse_number(raw):
         flat = flat.replace(",", "")
     else:
         flat = flat.replace(",", "")
-    if len(re.sub(r"\D", "", flat)) > 18:                    # absurd digit run
+    # No real statement line item runs anywhere near this many digits (the
+    # largest figure across every hand-verified fixture is 9 digits); a run
+    # this long is almost always several numbers glued with no separator at
+    # all to catch -- e.g. by _join_side_by_side reusing one row's text for
+    # several rows it best-overlaps -- so there's no space left for the
+    # check above to catch it on. Never guess where the real boundary was;
+    # refuse instead. 16 keeps the existing +-10**15 round-trip contract
+    # (test_round_trips_through_thousands_formatting) intact.
+    if len(re.sub(r"\D", "", flat)) > 16:                     # absurd digit run
         return None
     try:
         val = float(flat)

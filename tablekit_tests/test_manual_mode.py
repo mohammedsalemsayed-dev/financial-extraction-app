@@ -26,6 +26,8 @@ import serve                          # noqa: E402
 from tablekit.img2table_backend import (   # noqa: E402
     _Region, _split_glued_cell, _normalize_row_width, _merge_stacked,
     _drop_prose_columns, rows_in_box, HAVE_IMG2TABLE,
+    _unscramble_reversed_paren_wrap, _merge_side_by_side,
+    _looks_like_two_fused_statements, _SOCE_ANCHOR_RE,
 )
 
 
@@ -513,6 +515,27 @@ def test_looks_labelless():
     assert X._looks_labelless([["Revenue", 1], [None, 2], [None, 3], [None, 4]]) is True
 
 
+def test_looks_garbled_catches_several_rows_merged_into_one_cell():
+    """Found live (du annual 2011.pdf): the pdfplumber-fallback path's
+    default 'lines' strategy, with only sparse ruling to go on, merged 5
+    real line items into one cell each, newline-joined -- '6\\n7.1\\n7.2\\n
+    7.3\\n7.4' and '6,903,496\\n371,667\\n88,003\\n164,282\\n549,050'. The
+    tell is specifically multiple newline-split PIECES that independently
+    look like numbers -- a normal wrapped label isn't built from several
+    number-shaped fragments."""
+    garbled = [[None, "2011\nAED 000", None],
+              ["6\n7.1\n7.2\n7.3\n7.4", "6,903,496\n371,667\n88,003\n164,282\n549,050", "x"]]
+    assert X._looks_garbled(garbled) is True
+
+
+def test_looks_garbled_leaves_a_normal_wrapped_label_alone():
+    # a genuinely wrapped 2-line label/header -- one embedded newline, but
+    # its pieces are text, not several number-shaped fragments
+    normal = [["Net book value\nAt 31 December 2009", 334491, 115729, 450220],
+              ["Capital work\nin progress", "Buildings", "Total"]]
+    assert X._looks_garbled(normal) is False
+
+
 def test_attach_left_labels_recovers_text_left_of_the_ruled_box():
     class FakeWord(dict):
         pass
@@ -544,6 +567,34 @@ def test_attach_left_labels_respects_the_search_boundary():
     assert out == [["RealLabel", 1]]
 
 
+def test_attach_left_labels_keeps_two_wrapped_lines_in_reading_order():
+    """Found live (du annual 2010.pdf p22): img2table's own cell bbox for a
+    row can be taller than a single text line -- e.g. a ruled/bordered
+    numbers-only row whose matching label wraps onto two lines ('Net book
+    value' / 'At 31 December 2009'). The row_band search picks up words from
+    BOTH lines; sorting all of them by x0 together (ignoring which line each
+    came from) interleaves the two lines word-by-word instead of reading one
+    line fully before the next -- 'Net At 31 book December value 2009', not
+    'Net book value At 31 December 2009'. This is the regression lock for
+    the fix: group by line (top) first, then sort left-to-right within it."""
+    def W(text, x0, top):
+        return {"text": text, "x0": x0, "top": top}
+    class FakePage:
+        def extract_words(self):
+            return [
+                # line 1, left-to-right
+                W("Net", 10, 500), W("book", 25, 500), W("value", 45, 500),
+                # line 2, left-to-right -- deliberately positioned so a naive
+                # x0-only sort across BOTH lines would interleave with line 1
+                # (matches the real-world x0s that produced the bug)
+                W("At", 10, 512), W("31", 20, 512), W("December", 28, 512), W("2009", 60, 512),
+            ]
+    rows = [[334491, 115729, 450220]]
+    row_bands = [(498, 526)]     # one wide band spanning both physical lines
+    out = X._attach_left_labels(FakePage(), rows, row_bands, search_x0=0, region_x0=400)
+    assert out == [["Net book value At 31 December 2009", 334491, 115729, 450220]]
+
+
 @pytest.mark.skipif(not HAVE_IMG2TABLE, reason="img2table not installed")
 @pytest.mark.skipif(not (ROOT / "du annual 2010.pdf").exists(), reason="sample PDF not present")
 def test_extract_region_recovers_labels_for_a_ruled_numbers_only_box():
@@ -560,3 +611,109 @@ def test_extract_region_recovers_labels_for_a_ruled_numbers_only_box():
     assert "Short term employee benefits" in labels
     assert "Termination benefits" in labels
     assert t["health_labels"]["score"] > 0.5
+
+
+def test_split_glued_cell_handles_reversed_parens_too():
+    """Found live via the comprehensive audit (en-2020-etisalat p75): img2table
+    can glue two adjacent value columns into one cell on a given row just like
+    the normal-parens case _split_glued_cell already handled -- except when the
+    source PDF's own bidi artifact has already reversed each number's parens
+    (see parse_number), the glued result is two REVERSED tokens back to back."""
+    assert _split_glued_cell(")87,579( )11,915(") == [")87,579(", ")11,915("]
+    assert _split_glued_cell(")9,408( )896,525( )50,749(") == \
+        [")9,408(", ")896,525(", ")50,749("]
+    # unaffected: normal orientation, and a single (non-glued) reversed value
+    assert _split_glued_cell("(1,234) (5,678)") == ["(1,234)", "(5,678)"]
+    assert _split_glued_cell(")1,234(") == [")1,234("]
+
+
+def test_unscramble_reversed_paren_wrap_reorders_split_lines():
+    """Found live (en-2022-1-eand-group-annual-report.pdf p49, two 'Dividends'
+    rows): a reversed-parens negative number can ALSO have its digits split
+    across two physical lines inside the same img2table cell, with the line
+    order itself reversed by the same bidi artifact -- ')69,040\\n1,1(' for
+    what the PDF printed as '(1,169,040)'. Confirmed against the real page by
+    reconciling the surrounding row's own arithmetic (the 'Total' column value
+    minus every other movement in the row), not just by inspection."""
+    assert _unscramble_reversed_paren_wrap(") 69,040\n1,1 (") == ")1,169,040("
+    assert _unscramble_reversed_paren_wrap(") 670,421\n11, (") == ")11,670,421("
+    # a real two-line label must never be touched -- only bare digit/comma
+    # lines inside a reversed-paren wrapper qualify
+    assert _unscramble_reversed_paren_wrap(")Note\n24(") == ")Note\n24("
+    assert _unscramble_reversed_paren_wrap("normal text\nwith a newline") == \
+        "normal text\nwith a newline"
+    # no newline at all -- nothing for this to do
+    assert _unscramble_reversed_paren_wrap(")1,234(") == ")1,234("
+
+
+def test_merge_side_by_side_joins_a_label_block_with_a_figures_block():
+    # the documented legitimate case: one region is pure labels (no numbers),
+    # the other is pure figures (no labels) -- these really are one table
+    # split left/right, and should still be joined exactly as before.
+    labels = _region(0, 0, 100, 50, [(0, 10, ["Revenue"]), (10, 20, ["Costs"])])
+    figures = _region(105, 0, 200, 50, [(0, 10, [1000]), (10, 20, [-400])])
+    out = _merge_side_by_side([labels, figures])
+    assert len(out) == 1
+    assert [v for _, _, v in out[0].row_rows] == [["Revenue", 1000], ["Costs", -400]]
+
+
+def test_merge_side_by_side_leaves_two_independently_labelled_tables_alone():
+    """Found live (en-2021-etisalat-group-annual-report.pdf p62): a balance
+    sheet and a completely unrelated statement of changes in equity sit side
+    by side on a landscape page and are geometrically indistinguishable from
+    a genuine labels-block/figures-block split (small x-gap, large y-overlap)
+    -- but unlike that legitimate case, BOTH sides already have their own row
+    labels, which is the actual signature of two independently-complete
+    tables. They must not be zipped together row by row."""
+    balance_sheet = _region(0, 0, 100, 60, [
+        (0, 10, ["Goodwill and other intangible assets", 25830041]),
+        (10, 20, ["Property, plant and equipment", 43715088]),
+        (20, 30, ["Right-of-use assets", 2436921]),
+        (30, 40, ["Total assets", 128197066]),
+    ])
+    equity_statement = _region(105, 0, 200, 60, [
+        (0, 10, ["Balance at 1 January 2020", 8696754]),
+        (10, 20, ["Profit for the year", 9026522]),
+        (20, 30, ["Other comprehensive income for the year", 376376]),
+        (30, 40, ["Balance at 31 December 2020", 60550021]),
+    ])
+    out = _merge_side_by_side([balance_sheet, equity_statement])
+    assert len(out) == 2
+
+
+def test_looks_like_two_fused_statements_catches_a_real_case():
+    """Found live (en-2021-etisalat-group-annual-report.pdf p62): img2table's
+    own borderless-table clustering, not any merge this project performs,
+    fused a balance sheet and a completely different statement of changes in
+    equity into one region -- correctly detecting this is what lets
+    img2table_page_tables refuse it rather than serve rows that attach one
+    statement's columns to the other's."""
+    fused_rows = [
+        ["Non-current assets", None, None, None, None, "Share", None],
+        ["Goodwill and other intangible assets", 11, 25830041, 26276442,
+         None, "capital", "Reserves"],
+        ["Property, plant and equipment", 13, 43715088, 45803436,
+         "Balance at 1 January 2020", 8696754, 27812896],
+        ["Total assets", None, 46979699, 49698687,
+         "Profit for the year", None, 9026522],
+    ]
+    assert _looks_like_two_fused_statements(fused_rows) is True
+
+
+def test_looks_like_two_fused_statements_ignores_a_passing_prose_mention():
+    """A first pass at this check (a 24-file, 2428-page sweep of every real
+    loaded file) found two false positives before the prose filter was
+    added: accounting-policy notes (du annual 2014.pdf p26, du annual
+    2017.pdf p29) that mention "transactions with the owners" in an
+    ordinary 8-word sentence, nowhere near a real equity statement -- long
+    enough to read as prose (_looks_like_prose's own len(s.split()) >= 8
+    rule) rather than a short row-label-shaped cell. Real sentence from
+    that page, verified to still trip _SOCE_ANCHOR_RE on its own (so this
+    test would fail without the prose filter, not pass by coincidence)."""
+    soce_phrase_in_a_sentence = "that is, as transactions with the owners in"
+    assert _SOCE_ANCHOR_RE.search(soce_phrase_in_a_sentence)   # matches on its own
+    prose_rows = [
+        ["Total assets acquired in a business combination are", soce_phrase_in_a_sentence,
+         "their capacity as owners. The difference"],
+    ]
+    assert _looks_like_two_fused_statements(prose_rows) is False

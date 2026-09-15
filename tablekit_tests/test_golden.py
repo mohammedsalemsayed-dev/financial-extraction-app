@@ -108,9 +108,44 @@ def test_every_snapshot_statement_foots_except_known():
     ("n/a", None), ("", None), ("abc", None), ("10.1 -", None),
     ("1" * 400, None), ("9" * 30, None), ("1e999", None), (".", None),
     ("(1,234", None), ("1,2,3,4", 1234),
+    # reversed parens -- a bidi text-ordering artifact seen in real PDFs
+    # (e.g. du annual 2019.pdf, en-2022-1-eand-group-annual-report.pdf):
+    # ")1,234(" instead of "(1,234)". See tablekit/parse.py::parse_number.
+    (")1,234(", -1234), (")87,579(", -87579),
+    # several distinct numbers that ended up in the same cell (a wrapped
+    # multi-line cell flattened to spaces by normspace, or a row-joining
+    # artifact upstream) must never be silently glued into one digit blob --
+    # found live via the comprehensive audit as "2020202020192019" and an
+    # 18-digit "193881930915196032".
+    ("2020 2020 2019 2019", None), ("94,374 2,444,051 27,481", None),
+    # the tightened absurd-digit-run guard (18 -> 16 digits) must still let
+    # the existing +-10**15 round-trip contract through
+    ("1,000,000,000,000,000", 1000000000000000),
 ])
 def test_parse_number(raw, expected):
     assert X.parse_number(raw) == expected
+
+
+def test_equity_foots_excludes_subtotal_rows_from_the_movement_sum():
+    """Found live (du annual 2018.pdf p95): a hand-verified-correct equity
+    statement -- every row's own columns summed to its row total, and the
+    full opening-to-closing roll-forward balanced exactly -- was flagged as
+    NOT footing. _equity_foots sums the movement rows between an opening and
+    closing balance but wasn't excluding "Total ..." subtotal rows (e.g.
+    "Total comprehensive income"), double-counting them against the rows
+    they're already subtotals of."""
+    header = [None, "Total"]
+    data = [
+        header,
+        ["At 1 January 2018", 8342576],
+        ["Profit for the year", 1752992],
+        ["Other comprehensive income", 2687],
+        ["Total comprehensive income", 1755679],   # == sum of the two rows above
+        ["Cash dividends paid", -1586517],
+        ["Total transactions with shareholders", -1586517],  # == the row above
+        ["At 31 December 2018", 8511738],   # 8342576 + 1752992 + 2687 - 1586517
+    ]
+    assert X._equity_foots(data, 1) is True
 
 
 def test_label_health_runs_and_scores():

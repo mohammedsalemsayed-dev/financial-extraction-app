@@ -318,6 +318,33 @@ def _looks_labelless(rows):
     return hits < max(2, 0.3 * len(rows))
 
 
+def _looks_garbled(rows):
+    """True when the pdfplumber-fallback path (bare `.extract_table()`, no
+    img2table region to anchor it -- see extract_region) has clearly merged
+    several real rows into one cell. Its default "lines" strategy only finds
+    a row boundary where there's an actual ruled line; a statement with
+    sparse ruling (a few subtotal rules, none between individual line items
+    -- common on real, non-ruled-grid statements) makes it treat everything
+    between two consecutive rules as ONE cell, joined by embedded newlines.
+    Found live (du annual 2011.pdf, a 2-up landscape spread: prose auditors'
+    report beside the actual statement -- img2table itself found nothing on
+    this specific page, so this fallback is what ran): cells like
+    '6\\n7.1\\n7.2\\n7.3\\n7.4' and '6,903,496\\n371,667\\n88,003\\n164,282\\n549,050'
+    -- five DIFFERENT line items' note-refs and figures, silently shown as
+    one row instead of five. A cell with an embedded newline is completely
+    normal on its own (a wrapped label); the tell is specifically MULTIPLE
+    of the newline-split pieces each independently looking like a number --
+    a wrapped label's continuation lines don't."""
+    for row in rows or []:
+        for cell in row or []:
+            if not isinstance(cell, str) or "\n" not in cell:
+                continue
+            pieces = [p.strip() for p in cell.split("\n") if p.strip()]
+            if sum(1 for p in pieces if _NUM_RE.match(p)) >= 2:
+                return True
+    return False
+
+
 def _attach_left_labels(page, rows, row_bands, search_x0, region_x0):
     """Prepend a label column recovered from the page's own words, one row
     at a time: for each row's known Y-band (from the img2table region that
@@ -336,7 +363,22 @@ def _attach_left_labels(page, rows, row_bands, search_x0, region_x0):
         band = [w for w in words
                if top - 1 <= w["top"] <= bot + 1
                and search_x0 - 5 <= w["x0"] < region_x0]
-        label = _txt(" ".join(w["text"] for w in sorted(band, key=lambda w: w["x0"])))
+        # `row_bands[i]` comes from img2table's own cell bbox, which can be
+        # taller than a single text line (a ruled/bordered row with padding,
+        # or a genuinely-wrapped 2-line label) -- found live (du annual
+        # 2010.pdf p22): a band spanning both "Net book value" and, a full
+        # line below it, "At 31 December 2009" pulled in both lines' words,
+        # and sorting all of them by x0 together interleaved the two lines
+        # ("Net At 31 book December value 2009") instead of reading line by
+        # line. Group by each word's own line first (same rounding already
+        # used for this in guess_title()), THEN sort left-to-right within
+        # each line, so a tall band reads top-to-bottom / left-to-right
+        # regardless of how many lines of text it actually spans.
+        lines: dict = {}
+        for w in band:
+            lines.setdefault(round(w["top"]), []).append(w)
+        label = _txt(" ".join(
+            w["text"] for lt in sorted(lines) for w in sorted(lines[lt], key=lambda w: w["x0"])))
         out.append(([label] if label else [None]) + list(row))
     return out
 
@@ -397,6 +439,14 @@ def extract_region(pdf_path, page_index0, bbox, title=None):
             try:
                 raw = page.crop((x0, y0, x1, y1)).extract_table()
             except Exception:
+                raw = None
+            # Refuse a result this fallback path clearly botched (several
+            # real rows merged into one cell -- see _looks_garbled) rather
+            # than hand it to the user silently wrong. This is the ONLY
+            # extraction path that can produce this failure mode: img2table
+            # anchors every row to its own detected cell geometry, so it has
+            # no equivalent way to merge unrelated rows together.
+            if raw and _looks_garbled(raw):
                 raw = None
         if not raw:
             return None
@@ -1328,9 +1378,17 @@ def _equity_foots(data, col, tol=None):
     a, b = bal_rows[-2], bal_rows[-1]
     opening = data[a][col]
     closing = data[b][col]
+    # a "Total ..." row in this block (e.g. "Total comprehensive income",
+    # "Total transactions with shareholders...") is a subtotal of the
+    # movement rows immediately above it, not an independent movement --
+    # counting it too double-counts those rows.  Deliberately narrower than
+    # _HARD_TOTAL_RE: that pattern also matches "Profit for the year", which
+    # IS a real movement here (it's only a "total" in an income statement's
+    # own reconciliation, not in an equity roll-forward).
     moves = [data[i][col] for i in range(a + 1, b)
              if col < len(data[i]) and isinstance(data[i][col], (int, float))
-             and not re.search(r"(as )?(at|balance)", _row_label(data[i]), re.I)]
+             and not re.search(r"(as )?(at|balance)", _row_label(data[i]), re.I)
+             and not re.match(r"\s*total\b", _row_label(data[i]), re.I)]
     if len(moves) < 2:            # too thin to be a real check -> don't claim
         return None
     return abs(opening + sum(moves) - closing) <= tol

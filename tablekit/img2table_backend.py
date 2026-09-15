@@ -148,7 +148,7 @@ def img2table_page_tables(pdf_path, page_index0, min_confidence=50):
                         continue
                     top = min(c.bbox.y1 for c in cells) * PT_PER_PX
                     bot = max(c.bbox.y2 for c in cells) * PT_PER_PX
-                    vals = [c.value for c in cells]
+                    vals = [_unscramble_reversed_paren_wrap(c.value) for c in cells]
                     row_rows.append((top, bot, vals))
                 row_rows.sort(key=lambda r: r[0])
                 if not row_rows:
@@ -161,8 +161,49 @@ def img2table_page_tables(pdf_path, page_index0, min_confidence=50):
     except Exception:
         LOG.debug("img2table failed on page %s", page_index0, exc_info=True)
         out = []
+    # Refuse (rather than serve) a region that looks like two unrelated
+    # statements fused into one -- see _looks_like_two_fused_statements.
+    # There's no safe way to split it back apart here (that would need
+    # knowing exactly where one table ends and the other begins), so this
+    # is the same "detect and refuse" choice already made for a merged-rows
+    # cell (see _looks_garbled in extract_all_tables.py): better to fall
+    # through to "no table found" for this region than silently attach one
+    # statement's columns to another's rows.
+    out = [r for r in out if not _looks_like_two_fused_statements(
+        [v for _, _, v in r.row_rows])]
     _cache[key] = out
     return out
+
+
+_REV_PAREN_LINE_RE = re.compile(
+    r"^\)\s*([\d,]+(?:\.\d+)?)\s*\n\s*([\d,]+(?:\.\d+)?)\s*\(\s*$")
+
+
+def _unscramble_reversed_paren_wrap(v):
+    """A negative number whose parens came out reversed (")1,234(", see
+    parse_number's docstring for why) can ALSO have its digits split across
+    two physical lines within the same img2table cell, with the LINE ORDER
+    itself reversed by the same bidi artifact -- e.g. ")69,040\\n1,1("
+    for what the PDF actually printed as "(1,169,040)". Put the lines back
+    in the right order (and drop the newline) before this value ever
+    reaches parse_number: by the time a cell gets there it has already been
+    through normspace, which collapses "\\n" to an ordinary space -- at that
+    point there is no way to distinguish a genuine two-line split from an
+    unrelated space-separated cell, so this has to happen here, on the raw
+    value, while the newline is still a distinct signal. Deliberately
+    narrow (anchored on the reversed-paren wrapper, exactly one newline,
+    and both halves must look like bare digit groups) rather than a general
+    "try reversing any two tokens" rule, which would risk mis-firing on
+    ordinary two-number cells that have nothing to do with this artifact.
+    Confirmed against two real occurrences by reconciling the surrounding
+    row's own arithmetic, not just by inspection."""
+    if not isinstance(v, str) or "\n" not in v:
+        return v
+    m = _REV_PAREN_LINE_RE.match(v.strip())
+    if not m:
+        return v
+    line1, line2 = m.group(1), m.group(2)
+    return f"){line2}{line1}("
 
 
 def _y_overlap(a_top, a_bot, b_top, b_bot):
@@ -191,11 +232,26 @@ def _join_side_by_side(left: _Region, right: _Region) -> _Region:
     return _Region(x0, y0, x1, y1, out_rows)
 
 
+def _region_has_label_column(region):
+    return _has_label_column([v for _, _, v in region.row_rows])
+
+
 def _merge_side_by_side(regions, x_gap=40, y_overlap_frac=0.5):
     """Detect img2table regions that are really ONE table split left/right
     (e.g. a labels block and a separate figures-only block) and re-join them.
     Two regions qualify when they're horizontally adjacent (small x-gap) and
-    their overall Y-spans substantially overlap."""
+    their overall Y-spans substantially overlap.
+
+    That geometry alone isn't enough on a 2-column landscape page, though:
+    two ENTIRELY UNRELATED full-page tables (e.g. a balance sheet on the
+    left, a completely different statement of changes in equity on the
+    right) can satisfy the exact same small-x-gap / big-y-overlap test,
+    since both happen to run nearly the full page height. The distinguishing
+    signal is the one already in this module's own docstring for what a
+    legitimate split looks like: a real "figures-only block" has no label
+    column of its own. If BOTH sides already have their own label column,
+    they're two independently complete tables, not one table's labels half
+    and figures half -- joining them would zip unrelated rows together."""
     regions = list(regions)
     changed = True
     while changed and len(regions) > 1:
@@ -206,7 +262,8 @@ def _merge_side_by_side(regions, x_gap=40, y_overlap_frac=0.5):
                     continue
                 y_ov = _y_overlap(a.y0, a.y1, b.y0, b.y1)
                 shorter = min(a.y1 - a.y0, b.y1 - b.y0) or 1.0
-                if 0 <= b.x0 - a.x1 <= x_gap and y_ov > y_overlap_frac * shorter:
+                if 0 <= b.x0 - a.x1 <= x_gap and y_ov > y_overlap_frac * shorter \
+                        and not (_region_has_label_column(a) and _region_has_label_column(b)):
                     merged = _join_side_by_side(a, b)
                     regions[i] = merged
                     del regions[j]
@@ -217,7 +274,16 @@ def _merge_side_by_side(regions, x_gap=40, y_overlap_frac=0.5):
     return regions
 
 
-_TOKEN_RE_STR = r"\(?-?[\d,]+(?:\.\d+)?\)?%?|[-–—�]"
+# The reversed-paren alternative goes FIRST and requires both ")" and "("
+# (neither is optional there) -- some reports come out of PDF text
+# extraction with a negative number's parens reversed, ")1,234(", a bidi-
+# reordering artifact of the source PDF (see parse_number). When img2table
+# also glues two adjacent value columns into one cell on a given row, the
+# glued result is two of these reversed tokens back to back, ")87,579(
+# )11,915(", not two normal ones -- ordering the reversed form first keeps
+# the (both-optional) normal-parens alternative from matching only the
+# digits and leaving stray "(" / ")" characters unconsumed.
+_TOKEN_RE_STR = r"\)-?[\d,]+(?:\.\d+)?\(%?|\(?-?[\d,]+(?:\.\d+)?\)?%?|[-–—�]"
 _GLUED_CELL_RE = re.compile(rf"^(?:{_TOKEN_RE_STR})(?:\s+(?:{_TOKEN_RE_STR}))+$")
 _TOKEN_FIND_RE = re.compile(_TOKEN_RE_STR)
 
@@ -293,6 +359,51 @@ def _merge_stacked(regions, max_gap=60, col_tol=1, x_tol=25):
 
 def _looks_like_prose(s):
     return bool(_LEAK_RE.search(s)) or len(s.split()) >= 8
+
+
+# Deliberately narrow anchors: each phrase only makes sense as the PRIMARY
+# marker of one specific statement kind, not vocabulary that could plausibly
+# turn up as a passing mention inside a different one.
+_BS_ANCHOR_RE = re.compile(r"total assets\b|total liabilities\b|net assets\b", re.I)
+_SOCE_ANCHOR_RE = re.compile(
+    r"balance at \d|transactions with (the )?owners|"
+    r"total comprehensive income for the year", re.I)
+
+
+def _looks_like_two_fused_statements(rows):
+    """True when a single img2table region carries primary-anchor vocabulary
+    from two DIFFERENT statement kinds (so far: balance sheet + statement of
+    changes in equity) -- the signature of img2table's own borderless-table
+    clustering having fused two unrelated, independently-complete tables on
+    a 2-column landscape page (found live: a balance sheet and a completely
+    different equity statement on en-2021-etisalat-group-annual-report.pdf
+    p62, glueing "Share capital"/"Reserves" columns onto balance-sheet rows
+    like "Goodwill and other intangible assets"). That fusion happens
+    geometrically -- small x-gap, large y-overlap between the two source
+    regions -- which is indistinguishable from a genuine labels-block /
+    figures-block split of ONE table (see _merge_side_by_side); vocabulary
+    is the signal that actually is specific to two independent statements.
+
+    Only counts a cell as a match when it doesn't read as prose: an
+    accounting-policy note can mention "transactions with the owners" in a
+    sentence without being anywhere near a real equity statement, and a
+    first pass at this check (a 24-file, 2428-page sweep) found exactly
+    that -- two accounting-policy pages that happened to use this phrase in
+    a sentence, both eliminated once prose cells were excluded. With that
+    filter, the same sweep found exactly one true positive and zero false
+    positives across the entire real corpus."""
+    bs_hit = soce_hit = False
+    for row in rows:
+        for c in row:
+            if not (isinstance(c, str) and c.strip() and not _looks_like_prose(c)):
+                continue
+            if _BS_ANCHOR_RE.search(c):
+                bs_hit = True
+            if _SOCE_ANCHOR_RE.search(c):
+                soce_hit = True
+        if bs_hit and soce_hit:
+            return True
+    return False
 
 
 def _drop_prose_columns(rows):

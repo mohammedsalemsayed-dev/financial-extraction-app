@@ -1,5 +1,159 @@
 # Changelog
 
+## 0.7.8
+
+Found live by the user again, this time on `du annual 2011.pdf`'s balance
+sheet: cells bleeding into each other and duplicating. Traced to a real,
+general root cause, then -- per an explicit instruction not to ship
+per-file patches -- built a comprehensive audit that runs the real detector
+over every page of every loaded real file (24 files, 2428 pages, ~3200
+tables), simulates a user drawing a box around each detected table, and
+checks the result for the same class of corruption. That audit is what
+actually drove this release: every fix below was found either by it or by
+following up on what it surfaced, and every fix was re-verified by re-running
+it, not just by the fixture that originally caught it.
+
+- **Fixed: several real rows silently merged into one garbled cell.** The
+  pdfplumber fallback path in `extract_region` (used when img2table has no
+  region to anchor a manually-drawn box) can merge multiple lines into one
+  cell with an embedded newline. A newline in one cell is completely normal
+  on its own (a wrapped label) -- the tell is specifically when two or more
+  of the newline-split pieces independently look like a number, which a
+  label's continuation lines never do. New `_looks_garbled` check
+  (`extract_all_tables.py`) refuses the fallback result outright in that
+  case rather than show it, falling through to the existing "no table
+  found" path. New tests; full golden snapshot and pytest suite clean.
+- **Fixed: numbers silently glued together with no real separator between
+  them** (`tablekit/parse.py`, `parse_number`) -- e.g. `2020 2020 2019 2019`
+  (four years) coming out as `2020202020192019`, or two 9-digit figures
+  coming out as one 18-digit one. `normspace` turns an embedded newline
+  into a space, and `parse_number` used to blindly strip every space to
+  support legitimate space-grouped numbers like `1 234 567` -- with no way
+  to tell "one grouped number" from "several numbers that ended up in the
+  same cell" apart. Fixed by checking the space-separated tokens actually
+  fit a real grouped number's shape (first token &le;3 digits, every later
+  token exactly 3) before collapsing them; otherwise refuse rather than
+  fabricate a number nobody printed. Also tightened the absurd-digit-run
+  backstop that catches the same corruption when no separator survives at
+  all (18 &rarr; 16 digits -- the widest safe value that doesn't break the
+  existing &plusmn;10<sup>15</sup> round-trip property test; the largest
+  real figure across every hand-verified fixture is 9 digits). Confirmed
+  against the full audit: 94 absurd-number findings &rarr; 0, across every
+  file that had any.
+- **Fixed: correct equity statements flagged as not reconciling**
+  (`extract_all_tables.py`, `_equity_foots`). Found by hand-verifying a
+  `du annual 2018.pdf` equity statement was already numerically perfect --
+  every row's own columns summed to its row total, and the full
+  opening-to-closing roll-forward balanced exactly -- yet the tool called it
+  a footing failure. `_equity_foots` sums the movement rows between an
+  opening and closing balance but wasn't excluding "Total comprehensive
+  income" / "Total transactions with shareholders..." subtotal rows, so it
+  double-counted them against the rows they're already subtotals of.
+  Deliberately narrower than reusing the existing `_HARD_TOTAL_RE`: that
+  pattern also matches "Profit for the year", which is a real movement in
+  an equity roll-forward, not a rollup, unlike in an income statement.
+- **Fixed: negative numbers with their parentheses reversed** -- `)1,234(`
+  instead of `(1,234)`, a bidi text-ordering artifact in the source PDF,
+  confirmed on both an e&/Etisalat file and `du annual 2019.pdf`.
+  `telecom_extract.py` (used by the auto-detect path) already special-cased
+  this with a clear comment explaining it; it had just never been ported to
+  `tablekit/parse.py`, which the manual box-select path actually relies on
+  -- auto-detection was quietly getting these right while a user's own
+  drawn box got them wrong. Ported the same handling over. Two related
+  patterns found via the same audit and fixed alongside it:
+  - **Multiple reversed numbers glued into one cell** -- `)87,579( )11,915(`
+    -- extended `_split_glued_cell`'s existing token pattern
+    (`tablekit/img2table_backend.py`) to also recognize the reversed form,
+    so it un-glues both orientations the same way it already did for
+    normal-order glued cells.
+  - **A reversed number's digits split across two physical lines, with the
+    line order ALSO reversed** -- `)69,040\n1,1(` for what was printed as
+    `(1,169,040)`. Confirmed by reconciling the surrounding row's own
+    arithmetic (not just by inspection) on both real occurrences found.
+    Deliberately narrow -- keyed on the raw newline, which is still visible
+    before `normspace` collapses it to a space and destroys the signal a
+    more general "try reversing any two tokens" rule would need, and which
+    would risk mis-firing on an ordinary two-number cell that has nothing
+    to do with this artifact.
+- **Fixed: two unrelated tables on the same landscape page merged into one
+  nonsensical table.** On `en-2021-etisalat-group-annual-report.pdf` p62, a
+  balance sheet and a completely different statement of changes in equity
+  sit side by side; the merged result attached "Share capital" / "Reserves"
+  columns from the equity statement onto balance-sheet rows like "Goodwill
+  and other intangible assets". Traced to img2table's OWN internal
+  borderless-table clustering fusing the two before any of this project's
+  code runs, not to an explicit merge this project performs -- so hardening
+  this project's own `_merge_side_by_side` (skip merging two regions that
+  each already have their own label column, since that's the actual
+  signature of two independently-complete tables rather than one table's
+  labels half and figures half) is real and kept, but doesn't reach this
+  specific bug on its own. Two structural detection approaches were tried
+  and rejected before finding one that worked: a general "does this region
+  have two independent label columns" check produced 384 hits dominated by
+  ordinary text-heavy pages (a first sample was a table of contents), and
+  is not shipped. What worked instead was content, not structure: a
+  deliberately narrow check for primary-statement vocabulary from two
+  DIFFERENT statement kinds in the same region (`balance at \d` /
+  `transactions with owners` for a changes-in-equity statement alongside
+  `total assets` / `total liabilities` for a balance sheet) -- a first pass
+  at even this found 2 false positives (accounting-policy notes that
+  mention "transactions with the owners" in an ordinary sentence), fixed by
+  skipping any cell that reads as prose rather than a short label. With
+  that filter, a full 24-file, 2428-page sweep found exactly one match: the
+  real bug. `img2table_page_tables` now refuses (rather than serves) a
+  region matching this signature, the same "detect and refuse" choice
+  already made for a merged-rows cell -- there's no safe way to split it
+  back into its two source tables here, so a box drawn over the affected
+  area now correctly reports no table found (or, for a box that only
+  partly overlaps, the correct figures with their labels dropped) instead
+  of showing one statement's columns silently attached to the other's rows.
+  New regression tests for both the structural guard and the vocabulary
+  check, including the two false positives the prose filter exists for.
+
+## 0.7.7
+
+Found live by the user, using the app directly (not through a test): a real
+note-table (du annual 2010.pdf, p22, a PP&E schedule) with a column header
+split across two rows and a row label with its words scrambled. Both traced
+to a real root cause; only one was safe to ship.
+
+- **Fixed: a row label wrapped across two physical lines had its words
+  interleaved by X-position instead of read in order** -- `'Net At 31 book
+  December value 2009'` instead of `'Net book value At 31 December 2009'`.
+  `_attach_left_labels` (`extract_all_tables.py`) recovers a row's label
+  text by searching a Y-band derived from img2table's own cell bbox, which
+  can be taller than one text line (a padded/bordered row, or here a
+  genuinely 2-line label) -- every word inside that band was being sorted
+  by x0 alone, across whichever lines happened to fall in it, instead of
+  read one line at a time. Fixed by grouping words by their own line first
+  (same `round(word["top"])` convention `guess_title()` already uses), THEN
+  sorting left-to-right within each line. New regression test
+  (`test_attach_left_labels_keeps_two_wrapped_lines_in_reading_order`).
+  Verified against the full golden snapshot (60 cases, 14 real annual
+  reports): no change to any of them -- this only affects the specific
+  multi-line-band situation, never a normal single-line one.
+- **Found, attempted, reverted: a 2-line-wrapped column header (`'Capital
+  work'` / `'in progress'`) coming back as two separate rows instead of
+  one.** Traced to img2table's own row-clustering treating each Y-band as
+  its own row, with no concept of "this column's header wrapped." Wrote a
+  geometric merge heuristic (tight gap + one row's filled columns a proper
+  subset of the next's) that fixed this specific table cleanly -- and then
+  ran it against the full golden snapshot before considering it done, which
+  is what caught the problem: on `du annual 2013.pdf`'s cash flow statement
+  and `du annual 2025.pdf`'s equity statement, the same heuristic merged a
+  section header into its own first line item, and merged two DIFFERENT
+  line items' figures into one garbled string cell, because those
+  documents' normal section-header-to-first-line spacing (4.7pt) is
+  geometrically indistinguishable from a genuine wrapped-line gap (3pt on
+  the page that motivated the fix) -- there's no safe, general geometric
+  rule that separates them, at least not one this pass found. Reverted
+  rather than ship it: corrupting real figures elsewhere to fix a display
+  quirk in one table is the wrong trade, and "found a real bug, confirmed a
+  first attempt wasn't safe, reverted rather than guess again" is the
+  intended outcome of testing a core-extraction change this way, not a
+  failure of it. The header-split issue itself is unfixed as of this
+  release.
+
 ## 0.7.6
 
 - **`serve.py --debug` was practically unusable for any real session: 4.3 GB / 44.5 million lines from a 20-minute, 26-file stress test.** Chased down by actually running that stress test (aimed at reproducing the never-root-caused "breaks after 2-3 runs" report from 0.7.1) with `--debug` on and watching `debug.log` grow far faster than the request count could explain. `logging.basicConfig(level=DEBUG)` cascades to every logger in the process that doesn't set its own level, not just this project's own five `LOG.debug()` calls -- including `pdfminer` (underneath `pdfplumber`), which logs every single parse token, seek and keyword at DEBUG. Sampled the actual log content at several points through the file rather than assuming, confirmed >95% of lines were `pdfminer.psparser`/`pdfminer.pdfinterp`/etc., not this project's. Fixed by capping `pdfminer`'s own logger to WARNING whenever `--debug` is on -- verified with a real before/after: the same operation (three full-document scans) that previously wrote gigabytes now writes 1,085 bytes, and what's left is exactly the useful stuff (the per-request state line, the HTTP access log, startup messages).
