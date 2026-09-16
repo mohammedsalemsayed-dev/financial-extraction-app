@@ -52,6 +52,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+from tablekit.parse import parse_number as _tk_parse_number
+
 try:
     from pypdf import PdfReader, PdfWriter
     HAVE_PYPDF = True
@@ -319,14 +321,27 @@ PROFILES = {
 }
 
 
-def profile_for_file(path):
-    """(key, profile) for a PDF, from its file name. Falls back to du when
-    the name contains a bare 'du', otherwise to the Etisalat/e& profile."""
+def strict_profile_for_file(path):
+    """(key, profile) for a PDF whose name strictly matches a profile's
+    file_patterns -- (None, None) if it matches neither. No fallback (unlike
+    profile_for_file, which defaults to the Etisalat/e& profile for anything
+    unrecognised) -- for a caller that must never run on a file that isn't
+    actually a du/Etisalat report (e.g. locating a company-specific table by
+    fuzzy vocabulary match makes no sense on an unrelated PDF)."""
     name = path.name
     for key, prof in PROFILES.items():
         if any(p.search(name) for p in prof["file_patterns"]):
             return key, prof
-    if re.search(r"(^|[^a-z])du([^a-z]|$)", name, re.I):
+    return None, None
+
+
+def profile_for_file(path):
+    """(key, profile) for a PDF, from its file name. Falls back to du when
+    the name contains a bare 'du', otherwise to the Etisalat/e& profile."""
+    key, prof = strict_profile_for_file(path)
+    if key is not None:
+        return key, prof
+    if re.search(r"(^|[^a-z])du([^a-z]|$)", path.name, re.I):
         return "du", PROFILES["du"]
     return "etisalat", PROFILES["etisalat"]
 
@@ -2189,19 +2204,19 @@ def _cell_num(v):
 
 
 # trailing note ref -- "Revenue 6 (b)" or, with Etisalat's reversed
-# parentheses, "Revenue 6 )b("
-_TRAIL_NOTE_RE = re.compile(r"\s+\d{1,2}(\.\d+)?\s*(\([a-z0-9]{1,3}\)|\)[a-z0-9]{1,3}\()?\s*$")
+# parentheses, "Revenue 6 )b(" -- or, citing more than one note, a
+# comma-separated list ("Gain / (loss) on net investment hedge 28,34";
+# found live on both en-2021-etisalat-group-annual-report.pdf p61 and
+# en-2022-1-eand-group-annual-report.pdf p48, both via the pdfplumber-
+# fallback path's _attach_left_labels, which glues together whatever
+# words sit in the label band without knowing which ones are a note ref).
+_TRAIL_NOTE_RE = re.compile(
+    r"\s+\d{1,2}(\.\d+)?(\s*,\s*\d{1,2}(\.\d+)?)*\s*(\([a-z0-9]{1,3}\)|\)[a-z0-9]{1,3}\()?\s*$")
 _LEAD_NOTE_RE = re.compile(r"^\s*\d{1,2}\s+(?=[\d()\-–])")
 # a trailing sub-note marker with no leading digit, in any bracket/quote style:
 # ")i(", "(i)", '"i)"', "“i)”"
 _BARE_MARKER_RE = re.compile(
     r"\s+([)(\"“”‘’]{1,2}[a-z]{1,2}[)(\"“”‘’]{1,2})\s*$", re.I)
-
-# label (normalised, lower-cased) -> note reference, for the note column that
-# _strip_note_refs last removed. convert_pdf reads it to re-attach a display
-# "Note" column to the written sheet, AFTER the arithmetic check has run on
-# the clean body.
-_DROPPED_NOTE_COL: dict[str, str] = {}
 
 
 def _fmt_note_ref(v):
@@ -2227,8 +2242,21 @@ def _strip_note_refs(body):
     the label ("Revenue 6 (b)"), sometimes glued onto the first figure
     ("16 2,475,403") depending on how wide the label is. Strip them from
     both places so every row's figures sit in the same columns (and the
-    labels read clean)."""
-    _DROPPED_NOTE_COL.clear()
+    labels read clean).
+
+    Returns (rows, note_col) -- note_col is {normalized label: note ref}
+    for the column just removed. This is a plain return value, NOT a
+    module-level global anymore: the server is multi-threaded
+    (ThreadingHTTPServer) and this function has THREE independent callers
+    (the quickfind/telecom-candidate background scan, _recon_tables, and
+    extract_region) that can genuinely run concurrently on different
+    requests -- a shared mutable global cleared at the top of every call
+    was a real data race between them (found live: a fresh manual
+    extraction intermittently came back with no Notes column because a
+    concurrent quickfind scan's own call cleared/overwrote the global
+    mid-read, right between this function populating it and the caller
+    reading it back)."""
+    note_col: dict[str, str] = {}
     _g1 = r"(?:[()]?[-–]?[\d,]+[()]?|[-–])"
     glued = re.compile(rf"^{_g1}\s+{_g1}$")
 
@@ -2237,8 +2265,16 @@ def _strip_note_refs(body):
     # it would otherwise be summed into the arithmetic check and written as a
     # stray row.
     def _is_bare_year_row(r):
-        if row_label(r):
-            return False
+        # NOT "if row_label(r): return False" -- row_label returns the
+        # first non-empty STRING cell anywhere in the row, with no concept
+        # of "column 0" or "a real label" specifically, so on a row shaped
+        # like [None, None, "2012", "2011"] (img2table's own raw, still-
+        # string cells, before _clean's int coercion) it returns "2012"
+        # ITSELF -- a bare year string counts as its own "label" under
+        # that definition, defeating this guard for exactly the row shape
+        # it exists to recognize. The loop below already does the more
+        # precise check directly (return False the moment any cell is a
+        # real, non-year string), so it doesn't need row_label at all.
         vals = []
         for c in r:
             if isinstance(c, (int, float)) and not isinstance(c, bool):
@@ -2249,10 +2285,31 @@ def _strip_note_refs(body):
                 return False
         return bool(vals) and all(1990 <= v <= 2099 for v in vals)
 
+    def _bare_year_values(r):
+        vals = []
+        for c in r:
+            if isinstance(c, (int, float)) and not isinstance(c, bool):
+                vals.append(c)
+            elif isinstance(c, str) and re.fullmatch(r"\(?(19|20)\d\d\)?", c.strip()):
+                vals.append(int(re.sub(r"[^\d]", "", c)))
+        return vals
+
     def _is_unit_header_row(r):
         # every non-empty cell is a column-header token: a bare year, an
         # "AED 000" unit, "Note(s)", or a "31 December" date -- a header line
         # a word-level reconstruction picked up as a body row.
+        #
+        # A row that's PURELY years falls under _is_bare_year_row too (its
+        # own pattern list includes a bare year on its own) -- defer to that
+        # function's redundancy check instead of dropping unconditionally
+        # here, so a genuinely unique year-only header line (found live on
+        # du annual 2012.pdf's income statement: its 2-line header splits
+        # the date-range title, which carries the years, from a separate
+        # Note/units line -- there's no OTHER row repeating "2012 2011") is
+        # protected the same way there, not re-dropped by a second,
+        # independent path that doesn't know about that check.
+        if _is_bare_year_row(r):
+            return False
         vals = [c for c in r if c is not None and str(c).strip()]
         if not vals:
             return False
@@ -2272,8 +2329,27 @@ def _strip_note_refs(body):
         return bool(re.search(r"for the (year|period) ended", lbl, re.I)
                     and re.search(r"AED\s*['’]?\s*000", lbl, re.I))
 
+    # A bare-year row is only dropped when its years are a genuine DUPLICATE
+    # of another row's years elsewhere in the body -- the original motivating
+    # case above (a stray EXTRA copy the word-level reconstruction picked
+    # up). A bare-year row whose years appear NOWHERE else is legitimate,
+    # unique header content, not a redundant artifact -- found live
+    # dropping "2012 2011" outright (with no other row repeating them) on
+    # du annual 2012.pdf's income statement, a completely normal statement
+    # whose 2-line header splits the date-range title (with the years) from
+    # a separate Note/units line. Losing the header's own year numbers is a
+    # real data-fidelity regression the position this row happens to sit in
+    # (right above the first line item, same as the original bad case) can't
+    # distinguish on its own -- duplication is the actual signal.
+    def _is_redundant_bare_year_row(r):
+        if not _is_bare_year_row(r):
+            return False
+        years = set(_bare_year_values(r))
+        return any(other is not r and years <= set(_bare_year_values(other))
+                   for other in body)
+
     body = [r for r in body
-            if not _is_bare_year_row(r) and not _is_unit_header_row(r)
+            if not _is_redundant_bare_year_row(r) and not _is_unit_header_row(r)
             and not _is_squashed_header_row(r)]
     out = []
     for r in body:
@@ -2310,11 +2386,42 @@ def _strip_note_refs(body):
         # it up against the final written rows
         _lbl_clean = row_label(r)
         if _note_here and _lbl_clean:
-            _DROPPED_NOTE_COL.setdefault(normalize(_lbl_clean).lower(), _note_here)
+            note_col.setdefault(normalize(_lbl_clean).lower(), _note_here)
         # two figures that ended up in one cell ("(2,167,933) (2,153,590)")
         for i in range(1, len(r)):
             if isinstance(r[i], str) and glued.match(r[i].strip()):
                 a, b = r[i].split()
+                # A SINGLE number that picked up a stray internal gap
+                # (img2table's own cell-text assembly turning an internal
+                # newline into whitespace, not the source PDF -- see
+                # parse_number's own docstring) can ALSO match this "two
+                # glued figures" shape by coincidence: "1,1\n12,374" for a
+                # source "1,112,374" splits into "1,1" and "12,374", both
+                # individually digit/comma runs -- found live on en-2021-
+                # etisalat-group-annual-report.pdf p61's P&L, where the OLD
+                # split-in-two behaviour below silently fabricated "11" and
+                # "12374" out of one real figure. Prefer treating the WHOLE
+                # cell as one number whenever parse_number can, EXCEPT when
+                # one half is a bare dash/en-dash on its own -- that's the
+                # ORIGINAL, unrelated case this glued check exists for: a
+                # nil placeholder immediately followed by a separate real
+                # figure ("- 120,172", meaning no figure for one year and
+                # 120,172 for the other -- found live on etisalat-group-
+                # annual-report-english-2019.pdf p48). parse_number reads a
+                # leading bare "-" as a genuine minus sign (correctly, for
+                # every OTHER caller), so treating that whole string as one
+                # number here would silently flip a legitimate "nil,
+                # positive value" pair into a single fabricated negative
+                # value and lose the nil marker and the row's real column
+                # count. parse_number's own strict-match check is what
+                # makes preferring it safe otherwise -- it only ever
+                # succeeds on a concatenation that forms exactly one valid
+                # number, never on two genuinely distinct ones.
+                if a not in ("-", "–") and b not in ("-", "–"):
+                    whole = _tk_parse_number(r[i])
+                    if whole is not None:
+                        r[i] = whole
+                        continue
                 if i + 1 < len(r) and r[i + 1] is None:
                     r[i], r[i + 1] = clean_cell(a), clean_cell(b)
                 elif i + 1 == len(r):
@@ -2327,16 +2434,23 @@ def _strip_note_refs(body):
     # row so all figures line up in the same columns for the arithmetic
     # check. (Doing this per-row instead would shorten only the rows that
     # had a note number, re-introducing the misalignment.) The label->ref
-    # map is stashed in _DROPPED_NOTE_COL (already cleared at function entry)
-    # so the caller can re-attach the column to the final written sheet
-    # without it ever touching the arithmetic check.
+    # map is returned in note_col so the caller can re-attach the column
+    # to the final written sheet without it ever touching the arithmetic
+    # check.
     def _isnum(x):
         return isinstance(x, (int, float)) and not isinstance(x, bool)
     wide = [r for r in out if len(r) >= 4]
     narrow_fig = [r for r in out if len(r) == 3
                   and any(_isnum(c) for c in r[1:])]
     if wide and len(out) >= 4:
-        col1 = [r[1] for r in wide]
+        # the column's own header word ("Notes"/"Note") is neither a real
+        # note-ref value nor a real figure -- leaving it in the sample
+        # below just dilutes the ratio against a table with an extra
+        # header row of its own. Found live: a table with BOTH a
+        # "Note[s]" column-label row AND a units row ("AED 000") pushed a
+        # genuinely-all-note-ref column (6, 7, 8, ...) to 12/14 = 0.857,
+        # just under the 0.9 bar, leaving the whole column un-stripped.
+        col1 = [r[1] for r in wide if str(r[1] or "").strip().lower() not in ("note", "notes")]
         # a note ref is a small number, possibly with one decimal ("23.1")
         def _noterefish(v):
             if v is None:
@@ -2361,9 +2475,9 @@ def _strip_note_refs(body):
                     if len(r) >= 4 and r[1] is not None and str(r[1]).strip():
                         lbl = row_label(r)
                         if lbl:
-                            _DROPPED_NOTE_COL[normalize(lbl).lower()] = _fmt_note_ref(r[1])
+                            note_col[normalize(lbl).lower()] = _fmt_note_ref(r[1])
             out = [([r[0]] + list(r[2:])) if len(r) >= 4 else r for r in out]
-    return out
+    return out, note_col
 
 
 def _value_columns(body):
@@ -2546,59 +2660,59 @@ def _ensure_header(pdf, cand):
     return out
 
 
-def find_best_matching_table(pdf, page_indices, target):
-    """
-    Collect every candidate table for `target` -- from ruled tables on/near a
+def _add_candidate(cands, seen_keys, target, reference_labels, anti_labels, anchors,
+                    header, body, page, top, x0, x1, bottom=None):
+    """Score one raw candidate table against `target`'s reference vocabulary
+    and append it to `cands` if it clears MIN_CONTENT_SCORE (or the
+    reconciliation-forgiveness path below it). The scoring/filtering logic
+    itself -- shared by find_best_matching_table (ranks this down to one
+    winner) and find_candidate_locations (reports every survivor) -- lives
+    here so the two can never silently drift apart."""
+    if not body or len(body) < 3:
+        return
+    body, note_col = _strip_note_refs(body)
+    key = (page, round(top or 0), len(body))
+    if key in seen_keys:
+        return
+    # Score the TRIMMED body -- otherwise trailing rows of the next
+    # statement (interleaved on a landscape spread) trip the anti-labels
+    # and sink a perfectly good candidate before it's even considered.
+    trimmed = _trim_for(target, body)
+    score = table_match_score(trimmed, reference_labels, anti_labels=anti_labels)
+    score = 1.0 if score is None else score
+    if score < MIN_CONTENT_SCORE:
+        # A low vocabulary score (label words merged in a dense
+        # reconstruction) is forgiven only if the figures add up AND the
+        # table is a substantial one that still shows SOME of the
+        # expected vocabulary and, for the note, its anchor lines --
+        # otherwise any small unrelated table that happens to foot would
+        # sneak in.
+        rec = reconcile(target, trimmed)
+        if not (rec and rec["ok"] and len(trimmed) >= 10 and score >= 0.08
+                and _anchor_ok(trimmed, anchors)):
+            return
+    seen_keys.add(key)
+    cands.append({"header": header, "body": body, "page": page,
+                  "top": top, "x0": x0, "x1": x1, "bottom": bottom, "score": score,
+                  "note_col": note_col})
+
+
+def gather_candidate_tables(pdf, page_indices, target):
+    """Every raw candidate table for `target` -- from ruled tables on/near a
     heading-matching page, from a whole-page word reconstruction of an
     unruled statement, and (if nothing yet reconciles) from a full-document
-    scan -- then rank them:
-
-        1. arithmetic reconciles   (reconcile_pl / reconcile_note)
-        2. anchor labels present   (note only: >= 2 of anchor_labels)
-        3. content score
-
-    So a look-alike (segmental note, statement of changes in equity,
-    comprehensive income) that scores well on vocabulary but doesn't add up
-    loses to the real statement that does.
-
-    Returns (header, trimmed_body, page_1based, score, actual_heading, recon)
-    or (None, None, None, 0.0, None, None).
-    """
+    scan -- scored against target's reference vocabulary via _add_candidate,
+    but NOT yet ranked down to a single winner. Shared by
+    find_best_matching_table and find_candidate_locations."""
     reference_labels = target.get("reference_row_labels", [])
     anti_labels = target.get("anti_reference_labels", [])
     anchors = target.get("anchor_labels", [])
     cands = []
     seen_keys = set()
 
-    def add(header, body, page, top, x0, x1):
-        if not body or len(body) < 3:
-            return
-        body = _strip_note_refs(body)
-        note_col = dict(_DROPPED_NOTE_COL)     # label -> note ref just removed
-        key = (page, round(top or 0), len(body))
-        if key in seen_keys:
-            return
-        # Score the TRIMMED body -- otherwise trailing rows of the next
-        # statement (interleaved on a landscape spread) trip the anti-labels
-        # and sink a perfectly good candidate before it's even considered.
-        trimmed = _trim_for(target, body)
-        score = table_match_score(trimmed, reference_labels, anti_labels=anti_labels)
-        score = 1.0 if score is None else score
-        if score < MIN_CONTENT_SCORE:
-            # A low vocabulary score (label words merged in a dense
-            # reconstruction) is forgiven only if the figures add up AND the
-            # table is a substantial one that still shows SOME of the
-            # expected vocabulary and, for the note, its anchor lines --
-            # otherwise any small unrelated table that happens to foot would
-            # sneak in.
-            rec = reconcile(target, trimmed)
-            if not (rec and rec["ok"] and len(trimmed) >= 10 and score >= 0.08
-                    and _anchor_ok(trimmed, anchors)):
-                return
-        seen_keys.add(key)
-        cands.append({"header": header, "body": body, "page": page,
-                      "top": top, "x0": x0, "x1": x1, "score": score,
-                      "note_col": note_col})
+    def add(header, body, page, top, x0, x1, bottom=None):
+        _add_candidate(cands, seen_keys, target, reference_labels, anti_labels, anchors,
+                        header, body, page, top, x0, x1, bottom)
 
     # --- Pass 1: pages whose text matches a heading pattern ---------------
     checked = set()
@@ -2622,11 +2736,12 @@ def find_best_matching_table(pdf, page_indices, target):
                 merged = below if below else merged
             for mt in merged:
                 h, b = rows_to_header_and_body(mt["rows"])
-                add(h, b, pidx + 1, mt["top"], mt["x0"], mt["x1"])
+                add(h, b, pidx + 1, mt["top"], mt["x0"], mt["x1"], mt.get("bottom"))
                 alt = reconstruct_beside_ruled(pdf.pages[pidx], mt)
                 if alt:
                     ah, ab = rows_to_header_and_body(alt)
-                    add(ah, ab, pidx + 1, mt["top"] - 1, 0.0, float(pdf.pages[pidx].width))
+                    add(ah, ab, pidx + 1, mt["top"] - 1, 0.0, float(pdf.pages[pidx].width),
+                        mt.get("bottom"))
             if merged:
                 break
         pr = reconstruct_page_statement(page, heading_top, heading_x0)
@@ -2634,16 +2749,9 @@ def find_best_matching_table(pdf, page_indices, target):
             h, b = rows_to_header_and_body(pr)
             add(h, b, idx + 1, heading_top, 0.0, float(page.width))
 
-    def evaluate(c):
-        if target.get("mode") == "table_until_row":
-            trimmed, confirmed = truncate_at_row(c["body"], target)
-        else:
-            trimmed, confirmed = trim_note_table(c["body"], target), True
-        return trimmed, reconcile(target, trimmed), _anchor_ok(trimmed, anchors), confirmed
-
     def any_reconciles():
         for c in cands:
-            _, rec, anc, conf = evaluate(c)
+            _, rec, anc, conf = _evaluate_candidate(target, c, anchors)
             if rec and rec["ok"] and anc and conf:
                 return True
         return False
@@ -2658,11 +2766,11 @@ def find_best_matching_table(pdf, page_indices, target):
             for mt in get_real_merged_tables(page):
                 had_ruled = True
                 h, b = rows_to_header_and_body(mt["rows"])
-                add(h, b, i + 1, mt["top"], mt["x0"], mt["x1"])
+                add(h, b, i + 1, mt["top"], mt["x0"], mt["x1"], mt.get("bottom"))
                 alt = reconstruct_beside_ruled(page, mt)
                 if alt:
                     ah, ab = rows_to_header_and_body(alt)
-                    add(ah, ab, i + 1, mt["top"] - 1, 0.0, float(page.width))
+                    add(ah, ab, i + 1, mt["top"] - 1, 0.0, float(page.width), mt.get("bottom"))
             hh = find_heading_hits(build_lines(page.extract_words()), target["heading_patterns"])
             if hh and not had_ruled:
                 pr = reconstruct_page_statement(page, hh[0]["top"], hh[0]["x0"])
@@ -2670,29 +2778,126 @@ def find_best_matching_table(pdf, page_indices, target):
                     h, b = rows_to_header_and_body(pr)
                     add(h, b, i + 1, hh[0]["top"], 0.0, float(page.width))
 
+    return cands
+
+
+def _evaluate_candidate(target, c, anchors=None):
+    """(trimmed_body, reconcile_result, anchors_ok, confirmed) for one raw
+    candidate dict from gather_candidate_tables -- promoted out of
+    find_best_matching_table's old local `evaluate()` closure so
+    find_candidate_locations can call the exact same logic."""
+    if anchors is None:
+        anchors = target.get("anchor_labels", [])
+    if target.get("mode") == "table_until_row":
+        trimmed, confirmed = truncate_at_row(c["body"], target)
+    else:
+        trimmed, confirmed = trim_note_table(c["body"], target), True
+    return trimmed, reconcile(target, trimmed), _anchor_ok(trimmed, anchors), confirmed
+
+
+def _candidate_is_valid_shape(target, trimmed):
+    """Reject a candidate whose CONTENT SHAPE rules it out regardless of
+    vocabulary score -- promoted out of find_best_matching_table's old
+    inline filter so find_candidate_locations rejects the exact same
+    look-alikes rather than risk drifting from what the CLI already does."""
+    # For the expense NOTE, reject a candidate that is really the whole
+    # income statement (has a Revenue row and a profit subtotal) -- some
+    # du years (2014-2018) print the expense breakdown on the face of the
+    # statement with no separate note, and that belongs on the P&L sheet,
+    # not garbled onto the note sheet.
+    if target.get("mode") == "full_table":
+        labs = " || ".join((row_label(r) or "").lower() for r in trimmed)
+        if re.search(r"\brevenue\b", labs) and re.search(
+                r"gross profit|profit for the year|profit before (royalty|federal)", labs):
+            return False
+    # For the P&L, reject a candidate laid out with more than two value
+    # columns -- a real income statement has exactly current + prior
+    # year. Three-plus means a segmental note (revenue by geography), a
+    # statement of changes in equity, or a "before / adjustment / after"
+    # restatement reconciliation.
+    if target.get("mode") == "table_until_row" and len(_value_columns(trimmed)) > 2:
+        return False
+    return True
+
+
+def _candidate_bbox(c, page):
+    """[x0, y0, x1, y1] in PDF-point space, top-left origin -- the same
+    shape extract_all_tables.py's own table dicts use for "bbox", so
+    serve.py's existing highlight-drawing needs no new convention. A ruled
+    candidate's own bottom (captured in gather_candidate_tables via
+    get_real_merged_tables' "bottom" key) gives an exact box; a word-
+    reconstructed candidate has none, so this falls back to the page's own
+    bottom edge -- the same fallback extract_all_tables.py's _recon_tables()
+    already uses for exactly this situation, not a new invention."""
+    x0 = c.get("x0") if c.get("x0") is not None else 0.0
+    x1 = min(c.get("x1") if c.get("x1") is not None else page.width, page.width)
+    top = c.get("top") if c.get("top") is not None else 0.0
+    bottom = c.get("bottom")
+    bottom = min(bottom, page.height) if bottom is not None else page.height
+    return [round(v, 1) for v in (x0, top, x1, bottom)]
+
+
+def find_candidate_locations(pdf, page_indices, target):
+    """Every plausible location for `target` in this document -- NOT
+    collapsed to one winner the way find_best_matching_table is. Reports
+    every candidate that cleared gather_candidate_tables' own scoring gate,
+    including ones that don't themselves reconcile (find_best_matching_table's
+    require_reconcile short-circuit is deliberately NOT applied here -- a
+    non-reconciling candidate is still worth a human's look, just ranked
+    lower). A page can contribute more than one entry. No header/body/row
+    data goes out -- this locates, it does not extract.
+
+    Returns a list of dicts, most-confident first:
+        {"page": int (1-based), "bbox": [x0,y0,x1,y1], "score": float,
+         "reconciles": bool, "anchors_ok": bool, "confirmed": bool}
+    """
+    anchors = target.get("anchor_labels", [])
+    cands = gather_candidate_tables(pdf, page_indices, target)
+    out = []
+    for c in cands:
+        trimmed, rec, anc, confirmed = _evaluate_candidate(target, c, anchors)
+        if not _candidate_is_valid_shape(target, trimmed):
+            continue
+        page = pdf.pages[c["page"] - 1]
+        out.append({
+            "page": c["page"],
+            "bbox": _candidate_bbox(c, page),
+            "score": round(c["score"], 3),
+            "reconciles": bool(rec and rec["ok"]),
+            "anchors_ok": bool(anc),
+            "confirmed": bool(confirmed),
+        })
+    out.sort(key=lambda d: (d["reconciles"], d["anchors_ok"], d["score"]), reverse=True)
+    return out
+
+
+def find_best_matching_table(pdf, page_indices, target):
+    """
+    Collect every candidate table for `target` (via gather_candidate_tables)
+    then rank them:
+
+        1. arithmetic reconciles   (reconcile_pl / reconcile_note)
+        2. anchor labels present   (note only: >= 2 of anchor_labels)
+        3. content score
+
+    So a look-alike (segmental note, statement of changes in equity,
+    comprehensive income) that scores well on vocabulary but doesn't add up
+    loses to the real statement that does.
+
+    Returns (header, trimmed_body, page_1based, score, actual_heading, recon,
+    note_col) or (None, None, None, 0.0, None, None, {}).
+    """
+    anchors = target.get("anchor_labels", [])
+    cands = gather_candidate_tables(pdf, page_indices, target)
+
     if not cands:
         return None, None, None, 0.0, None, None, {}
 
     ranked = []
     for c in cands:
         c["header"] = _ensure_header(pdf, c)
-        trimmed, rec, anc, conf = evaluate(c)
-        # For the expense NOTE, reject a candidate that is really the whole
-        # income statement (has a Revenue row and a profit subtotal) -- some
-        # du years (2014-2018) print the expense breakdown on the face of the
-        # statement with no separate note, and that belongs on the P&L sheet,
-        # not garbled onto the note sheet.
-        if target.get("mode") == "full_table":
-            labs = " || ".join((row_label(r) or "").lower() for r in trimmed)
-            if re.search(r"\brevenue\b", labs) and re.search(
-                    r"gross profit|profit for the year|profit before (royalty|federal)", labs):
-                continue
-        # For the P&L, reject a candidate laid out with more than two value
-        # columns -- a real income statement has exactly current + prior
-        # year. Three-plus means a segmental note (revenue by geography), a
-        # statement of changes in equity, or a "before / adjustment / after"
-        # restatement reconciliation.
-        if target.get("mode") == "table_until_row" and len(_value_columns(trimmed)) > 2:
+        trimmed, rec, anc, conf = _evaluate_candidate(target, c, anchors)
+        if not _candidate_is_valid_shape(target, trimmed):
             continue
         ranked.append((c, trimmed, rec, anc, conf))
     if not ranked:

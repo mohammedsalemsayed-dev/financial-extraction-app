@@ -328,7 +328,7 @@ def test_cli_parses_debug_port_and_no_browser_flags(monkeypatch):
     monkeypatch.setattr(serve, "run", lambda files, **kw: captured.update(kw, files=files))
     serve._cli(["report.pdf", "--debug", "--no-browser", "--port", "9999"])
     assert captured == {"files": ["report.pdf"], "port": 9999,
-                        "open_browser": False, "debug": True}
+                        "open_browser": False, "debug": True, "allow_remote": False}
 
 
 def test_cli_defaults_match_previous_behavior_with_no_flags(monkeypatch):
@@ -339,7 +339,14 @@ def test_cli_defaults_match_previous_behavior_with_no_flags(monkeypatch):
     monkeypatch.setattr(serve, "run", lambda files, **kw: captured.update(kw, files=files))
     serve._cli(["report.pdf"])
     assert captured == {"files": ["report.pdf"], "port": None,
-                        "open_browser": True, "debug": False}
+                        "open_browser": True, "debug": False, "allow_remote": False}
+
+
+def test_cli_parses_allow_remote_flag(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(serve, "run", lambda files, **kw: captured.update(kw, files=files))
+    serve._cli(["report.pdf", "--allow-remote"])
+    assert captured["allow_remote"] is True
 
 
 class _FakeServer:
@@ -426,5 +433,197 @@ def test_http_end_to_end(monkeypatch):
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(xlsx.read()))
         assert len(wb.sheetnames) == len(stmts) + 1        # + Contents
+    finally:
+        srv.shutdown()
+
+
+# --------------------------------------------------- telecom_candidates() ---
+def test_telecom_candidates_never_opens_the_pdf_for_an_unrelated_file(monkeypatch):
+    """The concrete test for "this must never run on a file that isn't
+    actually a du/Etisalat report" -- the strict-match gate has to fail
+    BEFORE the PDF is ever opened, not just before the result is returned."""
+    import pdfplumber as pdfplumber_mod
+    def _boom(*a, **k):
+        raise AssertionError("pdfplumber.open should never be called for a non-matching file")
+    monkeypatch.setattr(pdfplumber_mod, "open", _boom)
+    monkeypatch.setattr(serve, "_state",
+                        {"files": [Path("Microsoft 2023 Annual Report.pdf")],
+                         "pages": None, "scans": {}, "pngs": {}, "pagetext": {}})
+    result = serve.telecom_candidates("Microsoft 2023 Annual Report.pdf")
+    assert result == {"available": False, "candidates": []}
+
+
+def test_telecom_candidates_reuses_the_mtime_cache(monkeypatch):
+    real_du_profile = X._te.PROFILES["du"]     # captured BEFORE X._te gets patched below
+    calls = []
+    def _fake_find(pdf, idx, target):
+        calls.append(target["name"])
+        return []
+    fake_te = type("FakeTE", (), {
+        "strict_profile_for_file": staticmethod(lambda p: ("du", real_du_profile)),
+        "find_candidate_locations": staticmethod(_fake_find),
+    })
+    monkeypatch.setattr(X, "_te", fake_te)
+    monkeypatch.setattr(X, "HAVE_RECON", True)
+    monkeypatch.setattr(serve, "_path", lambda name: ROOT / "du annual 2020.pdf")
+    monkeypatch.setattr(serve, "_state",
+                        {"files": [], "pages": None, "scans": {}, "pngs": {}, "pagetext": {}})
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("pathlib.Path.stat", lambda self: type("S", (), {"st_mtime": 1.0})())
+        r1 = serve.telecom_candidates("du annual 2020.pdf")
+        r2 = serve.telecom_candidates("du annual 2020.pdf")
+    assert r1 == r2 == {"available": True, "company": "du", "candidates": []}
+    assert calls == ["Consolidated statement of profit or loss (through 'Profit for the year')",
+                      "Operating expenses / General and administrative expenses note"]  # only ONE round
+
+
+@pytest.mark.skipif(not X.HAVE_RECON, reason="telecom_extract not importable")
+@pytest.mark.skipif(_sample_pdf() is None, reason="no sample PDF present")
+def test_http_telecom_candidates_round_trip(monkeypatch):
+    """Upload a real du report -> /api/telecom_candidates -> /api/page_raw
+    with the returned bbox, through the real HTTP handler."""
+    pdf = _sample_pdf()
+    if "du" not in pdf.name.lower():
+        pytest.skip("sample PDF isn't a du report")
+    monkeypatch.setattr(serve, "_state",
+                        {"files": [pdf], "pages": None, "scans": {}, "pngs": {},
+                         "pagetext": {}})
+    from http.server import ThreadingHTTPServer
+    port = serve._free_port(9300)
+    srv = ThreadingHTTPServer(("127.0.0.1", port), serve.Handler)
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    try:
+        base = f"http://127.0.0.1:{port}"
+        res = json.load(urllib.request.urlopen(
+            base + "/api/telecom_candidates?file=" + urllib.request.quote(pdf.name)))
+        assert res["available"] is True
+        assert res["candidates"], "expected at least one candidate on a real du report"
+        c = res["candidates"][0]
+        png = urllib.request.urlopen(
+            base + f"/api/page_raw?file={urllib.request.quote(pdf.name)}"
+                   f"&n={c['page']}&scale=1.5&bbox={','.join(str(v) for v in c['bbox'])}").read()
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    finally:
+        srv.shutdown()
+
+
+# ------------------------------------------------- remote-access passcode ---
+def test_is_authed_is_inert_when_remote_passcode_is_unset(monkeypatch):
+    """The whole gate must be a complete no-op for normal `python serve.py`
+    usage -- this is the one assertion that most directly protects every
+    other test (and every real local user) from ever seeing a login wall
+    they didn't ask for."""
+    monkeypatch.setattr(serve, "_REMOTE_PASSCODE", None)
+    fake_handler = type("H", (), {"headers": {}})()
+    assert serve._is_authed(fake_handler) is True
+
+
+def test_is_authed_requires_a_known_session_when_remote_passcode_is_set(monkeypatch):
+    monkeypatch.setattr(serve, "_REMOTE_PASSCODE", "test-passcode-123")
+    monkeypatch.setattr(serve, "_AUTH_SESSIONS", {"good-token"})
+    no_cookie = type("H", (), {"headers": {}})()
+    assert serve._is_authed(no_cookie) is False
+    bad_cookie = type("H", (), {"headers": {"Cookie": "tk_session=wrong-token"}})()
+    assert serve._is_authed(bad_cookie) is False
+    good_cookie = type("H", (), {"headers": {"Cookie": "tk_session=good-token"}})()
+    assert serve._is_authed(good_cookie) is True
+
+
+def test_http_cross_origin_post_refused_without_remote_mode(monkeypatch):
+    """The ORIGINAL protection (predates --allow-remote entirely): in normal
+    local-only usage, a POST whose Origin isn't 127.0.0.1/localhost is
+    refused outright. No dedicated test existed for this before -- closing
+    that gap here, since everything else in this file now touches the same
+    code path."""
+    monkeypatch.setattr(serve, "_state",
+                        {"files": [], "pages": None, "scans": {}, "manual": {},
+                         "pngs": {}, "pagetext": {}, "telecom": {}})
+    monkeypatch.setattr(serve, "_REMOTE_PASSCODE", None)
+    from http.server import ThreadingHTTPServer
+    port = serve._free_port(9410)
+    srv = ThreadingHTTPServer(("127.0.0.1", port), serve.Handler)
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/upload", data=b"{}", method="POST",
+            headers={"Content-Type": "application/json",
+                     "Origin": "https://example-tunnel.trycloudflare.com"})
+        try:
+            urllib.request.urlopen(req)
+            assert False, "expected a 403"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+            assert "cross-origin POST refused" in e.read().decode()
+    finally:
+        srv.shutdown()
+
+
+def test_http_remote_passcode_gate_full_flow(monkeypatch, tmp_path):
+    """Full round trip through the real HTTP handler: an unauthenticated
+    request gets bounced to /login, the wrong passcode doesn't grant a
+    session, the right one does (and sets a cookie), and -- the actual point
+    of this feature -- a cross-origin POST that would normally be refused
+    succeeds once authenticated via the passcode, while one WITHOUT the
+    cookie still gets refused exactly as before."""
+    import http.cookiejar
+    monkeypatch.setattr(serve, "_state",
+                        {"files": [], "pages": None, "scans": {}, "manual": {},
+                         "pngs": {}, "pagetext": {}, "telecom": {}})
+    monkeypatch.setattr(serve, "_REMOTE_PASSCODE", "correct-horse-battery")
+    monkeypatch.setattr(serve, "_AUTH_SESSIONS", set())
+    # the POST used below to prove the passcode-authenticated bypass really
+    # hits /api/upload (a real file-writing endpoint, chosen deliberately --
+    # it's the simplest _NEEDS_FILE-exempt route) -- isolate it from the
+    # real uploads/ dir, same pattern as test_http_manual_extraction_round_trip
+    monkeypatch.setattr(serve, "UPLOAD_DIR", tmp_path / "uploads")
+    from http.server import ThreadingHTTPServer
+    port = serve._free_port(9400)
+    srv = ThreadingHTTPServer(("127.0.0.1", port), serve.Handler)
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    try:
+        base = f"http://127.0.0.1:{port}"
+
+        # unauthenticated GET bounces to the login page (urllib follows the
+        # 302 automatically, so check the CONTENT it lands on)
+        body = urllib.request.urlopen(base + "/api/files").read().decode()
+        assert "Enter passcode" in body
+
+        # wrong passcode: no cookie granted, still bounced to login
+        wrong = urllib.request.urlopen(urllib.request.Request(
+            base + "/login", data=b"passcode=nope", method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"}))
+        assert "Enter passcode" in wrong.read().decode()
+        assert not serve._AUTH_SESSIONS
+
+        # without a session, a POST (cross-origin or not) is bounced to
+        # /login rather than let through -- it never even reaches the
+        # origin check below, which exists for the OTHER case (see
+        # test_http_cross_origin_post_refused_without_remote_mode)
+        req = urllib.request.Request(
+            base + "/api/upload", data=b"{}", method="POST",
+            headers={"Content-Type": "application/json",
+                     "Origin": "https://example-tunnel.trycloudflare.com"})
+        assert "Enter passcode" in urllib.request.urlopen(req).read().decode()
+
+        # correct passcode grants a session cookie
+        jar = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        opener.open(urllib.request.Request(
+            base + "/login", data=b"passcode=correct-horse-battery", method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"}))
+        assert any(c.name == "tk_session" for c in jar)
+
+        # the SAME cross-origin POST now succeeds through the authenticated session
+        req2 = urllib.request.Request(
+            base + "/api/upload",
+            data=json.dumps({"filename": "x.pdf", "data_b64": ""}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json",
+                     "Origin": "https://example-tunnel.trycloudflare.com"})
+        res = opener.open(req2)
+        assert res.status == 200
     finally:
         srv.shutdown()

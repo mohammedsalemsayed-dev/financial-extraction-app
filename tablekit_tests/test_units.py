@@ -367,3 +367,244 @@ def test_cashflow_foots_du_style_no_investing_subtotal():
     ]
     # operating 500 + (investing -150+30=-120) + financing -80 == net 300
     assert X._cashflow_foots(data, 1) is True
+
+
+# ----------------------------------------------------- Excel export format --
+def test_header_row_years_are_not_thousands_grouped_in_excel():
+    """Found live: a column header showing "2,025" instead of "2025" -- the
+    export's number_format was applying "#,##0" to every numeric cell,
+    header row included, and a year isn't a quantity that benefits from
+    thousands-grouping. Real data cells must still get it."""
+    t = _analyzed(_pl_rows(), "Consolidated statement of profit or loss")
+    wb = X.build_workbook([t])
+    ws = wb.worksheets[1]              # worksheets[0] is the Contents index
+    hi = t["header_idx"]
+    r0 = 4
+    # the header row's year cells (2024, 2023) -- plain, no grouping
+    for cx in (2, 3):
+        cell = ws.cell(row=r0 + hi, column=cx)
+        assert cell.value in (2024, 2023)
+        assert cell.number_format == "0"
+
+
+# ---------------------------------------------------------- note-ref column --
+def test_note_ref_map_survives_analyze_without_colliding_with_note_col():
+    """Found live: extract_region/find_all_tables stash the PDF's own
+    "Note" reference column (e.g. "19") as a display-only side channel,
+    SET BEFORE analyze() runs -- but analyze() already owns an unrelated
+    "note_col" field of its own (a column-INDEX hint, see analyze()'s
+    `notecol` local), and unconditionally overwrites it via t.update().
+    The two fields must use different keys, or the note-ref map is
+    silently clobbered the instant analyze() runs -- exactly what
+    happened before this was caught (see row_note_ref)."""
+    rows = _pl_rows()
+    t = {"rows": rows, "title": "P&L", "file": "x.pdf", "page_label": 1,
+         "shape": X.classify(rows),
+         "note_ref_map": {"revenue": "6", "cost of sales": "7"}}
+    X.analyze(t)
+    X._attach_health(t)
+    assert t["note_ref_map"] == {"revenue": "6", "cost of sales": "7"}
+    assert X.row_note_ref(t, rows[1]) == "6"     # Revenue
+    assert X.row_note_ref(t, rows[2]) == "7"     # Cost of sales
+    assert X.row_note_ref(t, rows[3]) is None    # Gross profit -- no note
+
+
+def test_build_workbook_writes_note_ref_as_its_own_display_column():
+    """The Notes-reference side channel (see above) has to actually reach
+    the exported sheet -- as its own column right after the label, not
+    merged into it -- without shifting the Δ/Δ% columns off the real
+    value columns."""
+    rows = _pl_rows()
+    t = _analyzed(rows, "P&L")
+    t["note_ref_map"] = {"revenue": "6"}
+    wb = X.build_workbook([t])
+    ws = wb.worksheets[1]
+    r0 = 4
+    revenue_i = next(i for i, r in enumerate(rows) if r[0] == "Revenue")
+    assert ws.cell(row=r0 + revenue_i, column=2).value == "6"
+    assert ws.cell(row=r0 + revenue_i, column=3).value == 1_000_000
+    # Δ header still lands right after the shifted-over value columns
+    hi = t["header_idx"]
+    assert ws.cell(row=r0 + hi, column=5).value == "Δ (change)"
+
+
+# ------------------------------------------------------- wrapped labels -----
+def test_merge_wrapped_labels_rejoins_a_split_total_row():
+    """Found live: img2table's own row detection (and the regex
+    reconstruction) splits a label that wraps onto a second physical line
+    into two table rows. When the SPLIT row is itself a "Total ..." line,
+    the half carrying the real figures reads as some unrelated fragment
+    ("amortization") instead -- which broke footing entirely, since
+    nothing recognizable was left to anchor the section boundary."""
+    rows = [
+        ["Total net operating expenses before depreciation and", None, None],
+        ["amortization", -3307608, -3347636],
+    ]
+    out = X._merge_wrapped_labels(rows)
+    assert len(out) == 1
+    assert out[0] == ["Total net operating expenses before depreciation and amortization",
+                       -3307608, -3347636]
+
+
+def test_merge_wrapped_labels_leaves_two_real_rows_alone():
+    """The merge must be conservative: a row starting with a capital
+    letter reads as a genuine new line item, not a wrap continuation --
+    even when the row above it happens to carry no figures (a normal
+    section header, e.g. "Direct costs")."""
+    rows = [
+        ["Direct costs", None, None],
+        ["Interconnect cost", -100, -90],
+    ]
+    assert X._merge_wrapped_labels(rows) == rows
+
+
+def test_merge_wrapped_labels_does_not_merge_into_a_row_that_already_has_figures():
+    """A lowercase-starting label is only treated as a continuation when
+    the row above is label-only -- if the row above already has its own
+    figures, it's a complete, real row, and merging would silently
+    overwrite its values with the row below's."""
+    rows = [
+        ["income before tax (restated)", 100, 90],
+        ["excluding one-off items", 5, 4],
+    ]
+    assert X._merge_wrapped_labels(rows) == rows
+
+
+# --------------------------------------------------- footing section scope --
+def _sibling_sections_rows():
+    """Three INDEPENDENT subtotal sections (revenue / direct costs / opex)
+    with no overarching "profit for the year" row -- e.g. only the left
+    half of a 2-up landscape page was boxed. "Total operating expenses"
+    has nothing numerically to do with revenue or direct costs above it.
+    Values are in the thousands, matching real statement magnitude -- the
+    existing trailing-EPS-tail trim (values < 1000) would otherwise eat
+    through a table of toy-sized numbers before this code path even runs."""
+    return [
+        ["", 2024, 2023],
+        ["Revenue A", 100_000, 90_000],
+        ["Revenue B", 50_000, 40_000],
+        ["Total revenue", 150_000, 130_000],
+        ["Cost A", -30_000, -25_000],
+        ["Cost B", -20_000, -15_000],
+        ["Total direct costs", -50_000, -40_000],
+        ["Opex A", -10_000, -8_000],
+        ["Opex B", -5_000, -4_000],
+        ["Total operating expenses", -15_000, -12_000],
+    ]
+
+
+def test_income_statement_foots_a_partial_box_against_only_its_own_section():
+    """Regression for the live bug: checking the WHOLE column (every
+    sibling section's leaves) against the last section's own total wrongly
+    reported NO FOOT. The check must narrow to just the section ending in
+    the final row once the full walk demonstrably fails."""
+    t = _analyzed(_sibling_sections_rows(), "Income statement")
+    assert t["foots"] is True
+    assert "sum of 2 line items = -15,000" in t["foot_detail"]
+
+
+def _cascading_multi_total_rows():
+    """A COMPLETE, normal cascading P&L using "Net income" terminology --
+    never matches the "profit for the year" / OCI wording the cut-search
+    looks for, so this hits the exact same "no recognised ending" code
+    path as the partial-box case above. Unlike that case, "Gross profit"
+    genuinely must stay in the running total feeding the final line.
+    Values in the thousands for the same reason as the fixture above."""
+    return [
+        ["", 2024, 2023],
+        ["Revenue", 100_000, 90_000],
+        ["Cost of sales", -40_000, -35_000],
+        ["Gross profit", 60_000, 55_000],
+        ["Operating expenses", -20_000, -18_000],
+        ["Net income", 40_000, 37_000],
+    ]
+
+
+def test_income_statement_foots_a_complete_cascade_without_narrowing():
+    """Non-regression guard for the fix above: a statement with NO
+    recognised ending (so the same code path runs) but where the full,
+    unscoped walk already reconciles must NOT be narrowed -- narrowing it
+    would throw away "Gross profit"'s contribution and break a
+    previously-working statement. Found live: a synthetic "Net income"
+    fixture regressed to NO FOOT the first time this was attempted."""
+    t = _analyzed(_cascading_multi_total_rows(), "Income statement")
+    assert t["foots"] is True
+    assert "sum of 3 line items = 40,000" in t["foot_detail"]
+
+
+# -------------------------------------------------------- equity footing ----
+def test_equity_foots_does_not_exclude_a_movement_that_merely_contains_the_word_at():
+    """Found live: the exclusion filter for "other balance rows" searched
+    for the bare substring "at" anywhere in a label, matching completely
+    ordinary English ("financial asset AT fair value", "obligATions") --
+    not just a real "As at [date]" balance row. Once a wrapped label is
+    correctly rejoined (see _merge_wrapped_labels), a real movement row
+    describing fair value "at" a point in time was silently dropped from
+    the sum. The exclusion must be date-anchored, same as the opening/
+    closing balance-row detection itself."""
+    data = [
+        ["At 1 January 2024", 1000],
+        ["Net profit for the year", 200],
+        ["Fair value changes on financial asset at fair value through OCI", -50],
+        ["At 31 December 2024", 1150],
+    ]
+    assert X._equity_foots(data, 1) is True
+
+
+# ---------------------------------------------------------- header row ------
+def test_header_row_with_label_and_years_together_is_recognized():
+    """Found live: ["As at 31 December", 2010, 2009] -- a real label PLUS
+    the year columns collapsed onto one row -- was being read as a DATA
+    row because a year like 2010 is ">= 100", so its own "2010" got
+    summed into the footing check as if it were a real figure. A
+    plausible year must not disqualify a row from being the header just
+    for being numerically large."""
+    rows = [
+        ["As at 31 December", 2024, 2023],
+        ["Revenue", 1_000_000, 900_000],
+        ["Cost of sales", -400_000, -350_000],
+        ["Profit for the year", 600_000, 550_000],
+    ]
+    t = {"rows": rows, "title": "Income statement", "file": "x.pdf", "page_label": 1,
+         "shape": X.classify(rows)}
+    X.analyze(t)
+    assert t["header_idx"] == 0
+    assert t["data_start"] == 1
+    assert t["foots"] is True
+
+
+def test_header_row_with_a_real_large_figure_is_not_mistaken_for_one():
+    """The opposite direction: a genuine data row with big figures must
+    stay a data row even though its own label is short, same as before
+    this fix."""
+    rows = [
+        ["", 2024, 2023],
+        ["Revenue", 1_000_000, 900_000],
+    ]
+    t = {"rows": rows, "title": "x", "file": "x.pdf", "page_label": 1,
+         "shape": X.classify(rows)}
+    X.analyze(t)
+    assert t["header_idx"] == 0
+    assert t["data_start"] == 1
+
+
+# ------------------------------------------------------- filename years -----
+def test_doc_years_from_filename_reads_the_fiscal_year():
+    assert X._doc_years_from_filename("du annual 2015.pdf") == [2015, 2014]
+    assert X._doc_years_from_filename("en-2020-etisalat-group-annual-report.pdf") == [2020, 2019]
+    assert X._doc_years_from_filename("no_year_here.pdf") is None
+
+
+def test_finish_manual_table_falls_back_to_filename_year_when_header_is_cropped():
+    """Found live: a manually-drawn box that starts right at the first
+    data row (the header sits just above where the user meant to click
+    "start here") left `years` empty with no fallback at all -- unlike
+    the automatic scan() path, which has always had this filename-
+    derived fallback for exactly this situation."""
+    rows = [
+        ["Revenue", 1_000_000, 900_000],
+        ["Cost of sales", -400_000, -350_000],
+        ["Profit for the year", 600_000, 550_000],
+    ]
+    t = X._finish_manual_table("du annual 2015.pdf", 40, rows, [0, 0, 100, 100], "Income statement")
+    assert t["years"] == [2015, 2014]

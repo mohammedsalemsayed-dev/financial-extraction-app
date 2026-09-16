@@ -1,5 +1,84 @@
 # Changelog
 
+## 0.7.9
+
+Two threads of work: another round of the same page-by-page real-file
+audit from 0.7.8 (more corpus coverage, several more root causes found and
+fixed the same way -- traced to a general cause, not patched per file),
+and a new feature: an interactive table-grid preview for manual box-select,
+built after the user asked several pointed questions about exactly what a
+drawn box actually captures and whether partial selections (one row, one
+column, one cell) would work correctly.
+
+### More data-fidelity fixes (same audit discipline as 0.7.8)
+
+- **Fixed: two unrelated statements fused into one table.** img2table's own
+  borderless-table clustering can glue a completely different statement
+  onto the one a user actually marked (confirmed live: `du annual
+  2011.pdf`'s income statement fused row-by-row with its cash flow
+  statement on the same landscape page). Detected via statement-specific
+  vocabulary and refused rather than served with one statement's columns
+  attached to the other's rows.
+- **Fixed: a bare year-header row silently lost.** A row shaped like
+  `[None, None, "2012", "2011"]` (no real label, only the year columns) was
+  being treated as redundant and dropped even when it carried the ONLY
+  copy of those years on the page (`du annual 2012.pdf`'s income
+  statement) -- now only dropped when it's a genuine duplicate of another
+  row's years elsewhere in the table.
+- **Fixed: `_looks_garbled`'s fixed "&ge;2 numbers" threshold** flagged a
+  legitimate wrapped row (a label that wraps around its own note-ref and
+  figures) as corruption once the same check was extended to the
+  img2table path. Now relative to the table's own column count instead of
+  a fixed constant.
+- **Fixed: a real label column dropped as prose**, twice over -- once
+  because a still-unparsed numeric string ("12,951,414") passed as "real
+  text", and again because any alphabetic content anywhere in a column
+  (not a genuine fraction of its own cells) counted as a label. Both
+  tightened; the safeguard now requires alphabetic content on a real
+  portion of the column's own non-empty cells.
+- **Fixed: reversed-parenthesis negatives** (`)1,234(`, a bidi artifact)
+  on the manual box-select path, plus the rarer case where the digits
+  also split across two reversed-order lines -- matching handling that
+  already existed for automatic detection.
+- **Fixed: a glued-cell "prefer the whole parse" repair** was reuniting a
+  nil marker and a separate real figure (`"- 120,172"`) into one
+  fabricated negative number, losing the nil marker -- excluded whenever
+  either half of a glued pair is a bare dash.
+- Several smaller fixes in the same vein (Notes-column stripping missed
+  by a units-row diluting the ratio, a data race in a shared note-column
+  global under concurrent requests, Microsoft's 10-K getting demoted from
+  "income statement" for using US-GAAP wording instead of IFRS terms, and
+  more) -- see the new regression tests in `tablekit_tests/` for the full,
+  precise list; each one is named after the real bug it locks in.
+
+### New: interactive grid preview for manual box-select
+
+Built in six phases, each verified against real files before moving to
+the next -- full detail in each phase's own code comments and tests:
+
+- After releasing the mouse on a drawn box, the actual detected table
+  grid (rows and columns) is now drawn over it, so what you see is
+  what extraction will use -- not a guess about what's inside the box.
+- Any grid line can be dragged to a new position; adjacent cells stay
+  contiguous when you move a shared edge.
+- "+ Row line" / "+ Column line" arm a one-click insert; dragging a line
+  off the table's own edge removes it.
+- The finalized grid -- auto-detected or hand-edited -- now actually
+  drives extraction (`extract_all_tables._extract_via_grid`), reading
+  text directly from each cell's rectangle instead of re-guessing
+  structure. Omitting it reproduces the pre-existing behavior exactly
+  (confirmed via a byte-identical `golden.json`).
+- A grid-derived Notes-reference column (e.g. "6", "7") arrives already
+  isolated in its own cell, never glued to anything -- the existing
+  note-stripping logic only knows how to un-glue text, so it never got
+  the chance to remove it. Fixed with a small, targeted re-glue step
+  (`_reglue_bare_note_column`) so it's handled the same way either path
+  produces it.
+
+New tests throughout (`tablekit_tests/test_manual_mode.py`,
+`tablekit_tests/js/test_webui_logic.js`); full pytest + JS suite green,
+ruff/mypy clean, `golden.json` byte-identical.
+
 ## 0.7.8
 
 Found live by the user again, this time on `du annual 2011.pdf`'s balance

@@ -112,6 +112,24 @@ def test_every_snapshot_statement_foots_except_known():
     # (e.g. du annual 2019.pdf, en-2022-1-eand-group-annual-report.pdf):
     # ")1,234(" instead of "(1,234)". See tablekit/parse.py::parse_number.
     (")1,234(", -1234), (")87,579(", -87579),
+    # a step further than the swap above: BOTH reversed parens carried all
+    # the way to the front instead of one on each side -- ") (417,358" for
+    # a source "(417,358)". img2table's own cell-text assembly (not
+    # pdfplumber's), found live on en-2022-1-eand-group-annual-report.pdf
+    # p50's cash flow statement.
+    (") (417,358", -417358), (") (297,462", -297462),
+    # a number that's already comma-grouped picking up a stray extra space
+    # right after one of its own commas -- img2table's own cell-text
+    # assembly again, found live on the same file/page: pdfplumber's own
+    # extract_words() reads the same spot as the ordinary, ungapped
+    # "11,180,517".
+    ("11, 180,517", 11180517), ("1, 234,567", 1234567),
+    # the stray gap doesn't have to land right after a comma -- "1,1\n12,374"
+    # for a source "1,112,374" splits mid-group instead (found live on
+    # en-2021-etisalat-group-annual-report.pdf p61); concatenating with no
+    # separator still recovers it as long as that concatenation is exactly
+    # one strictly comma-grouped number.
+    ("1,1\n12,374", 1112374), ("1,1 12,374", 1112374),
     # several distinct numbers that ended up in the same cell (a wrapped
     # multi-line cell flattened to spaces by normspace, or a row-joining
     # artifact upstream) must never be silently glued into one digit blob --

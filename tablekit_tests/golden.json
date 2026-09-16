@@ -673,7 +673,7 @@
    ],
    [
     "Other income",
-    -10685
+    -10685.0
    ],
    [
     "Changes in working capital",
@@ -689,19 +689,19 @@
    ],
    [
     "Purchase of property, plant and equipment",
-    -1322898
+    -1322898.0
    ],
    [
     "Purchase of IT software",
-    -134264
+    -134264.0
    ],
    [
     "Purchase of equity accounted investment",
-    -21230
+    -21230.0
    ],
    [
     "Short term investments",
-    -3855000
+    -3855000.0
    ],
    [
     "Other income",
@@ -709,7 +709,7 @@
    ],
    [
     "Net cash used in investing activities",
-    -5322707
+    -5322707.0
    ],
    [
     "Cash flows from financing activities",
@@ -721,11 +721,11 @@
    ],
    [
     "Repayment of borrowings",
-    -603557
+    -603557.0
    ],
    [
     "Payment on behalf of founding shareholders",
-    -150991
+    -150991.0
    ],
    [
     "Finance income",
@@ -733,19 +733,19 @@
    ],
    [
     "Finance expense",
-    -84822
+    -84822.0
    ],
    [
     "Dividends paid",
-    -2377143
+    -2377143.0
    ],
    [
     "Net cash used in financing activities",
-    -771043
+    -771043.0
    ],
    [
     "Net (decrease) / increase in cash and cash equivalents",
-    -2294861
+    -2294861.0
    ],
    [
     "Cash and cash equivalents at 1 January",
@@ -913,7 +913,7 @@
    2015
   ],
   "foots": true,
-  "nrows": 29,
+  "nrows": 28,
   "ncols": 3,
   "title": "Statement of profit or loss",
   "series": [
@@ -1006,11 +1006,7 @@
     1752556
    ],
    [
-    "Other comprehensive (loss)/income",
-    null
-   ],
-   [
-    "subsequently to profit or loss",
+    "Other comprehensive (loss)/income subsequently to profit or loss",
     null
    ],
    [
@@ -1179,6 +1175,141 @@
    [
     "Non-cash transaction",
     null
+   ]
+  ]
+ },
+ {
+  "file": "du annual 2016.pdf",
+  "page": 25,
+  "kind": "statement of changes in equity",
+  "years": [
+   2016,
+   2015
+  ],
+  "foots": true,
+  "nrows": 30,
+  "ncols": 6,
+  "title": "statement of changes in equity",
+  "series": [
+   [
+    "Other",
+    null
+   ],
+   [
+    "reserves,",
+    null
+   ],
+   [
+    "net of",
+    null
+   ],
+   [
+    "Share",
+    null
+   ],
+   [
+    "capital",
+    null
+   ],
+   [
+    "(Note 19)",
+    null
+   ],
+   [
+    "AED 000",
+    null
+   ],
+   [
+    "At 1 January 2015",
+    1792982
+   ],
+   [
+    "Profit for the year",
+    null
+   ],
+   [
+    "Other comprehensive income",
+    3033
+   ],
+   [
+    "Total",
+    1796015
+   ],
+   [
+    "Transfer to statutory reserve",
+    194135
+   ],
+   [
+    "Transfer to retained earnings",
+    -2346.0
+   ],
+   [
+    "Interim cash dividend(1)",
+    594286
+   ],
+   [
+    "Special cash dividend(2)",
+    457143
+   ],
+   [
+    "Final cash dividend proposed(3)",
+    914286
+   ],
+   [
+    "Cash dividends paid",
+    -1965715.0
+   ],
+   [
+    "Total transactions with shareholders recognised directly in equity",
+    191789
+   ],
+   [
+    "At 31 December 2015",
+    1987804
+   ],
+   [
+    "Profit for the year",
+    null
+   ],
+   [
+    "Other comprehensive income/(loss)",
+    3247
+   ],
+   [
+    "Total",
+    1991051
+   ],
+   [
+    "Transfer to statutory reserve",
+    175256
+   ],
+   [
+    "Transfer to retained earnings",
+    -1194.0
+   ],
+   [
+    "Interim cash dividend(1)",
+    594286
+   ],
+   [
+    "Final cash dividend proposed(3)",
+    951910
+   ],
+   [
+    "Cash dividends paid",
+    -1508572.0
+   ],
+   [
+    "Acquisition of treasury shares",
+    -199695.0
+   ],
+   [
+    "Total transactions with shareholders recognised directly in equity",
+    11991
+   ],
+   [
+    "At 31 December 2016",
+    2003042
    ]
   ]
  },
@@ -1457,7 +1588,7 @@
    2018
   ],
   "foots": true,
-  "nrows": 52,
+  "nrows": 51,
   "ncols": 3,
   "title": "Statement of cash flows",
   "series": [
@@ -1566,11 +1697,7 @@
     3272023
    ],
    [
-    "EITC Investment Holdings",
-    null
-   ],
-   [
-    "content, media, data and value added",
+    "EITC Investment Holdings content, media, data and value added",
     100
    ],
    [
@@ -1684,10 +1811,6 @@
   "ncols": 3,
   "title": "Statement of financial position",
   "series": [
-   [
-    "Assets Notes",
-    2020
-   ],
    [
     "Non-current assets",
     null
@@ -3245,7 +3368,7 @@
    2024
   ],
   "foots": true,
-  "nrows": 27,
+  "nrows": 19,
   "ncols": 6,
   "title": "statement of changes in equity",
   "series": [
@@ -3258,32 +3381,16 @@
     null
    ],
    [
-    "Fair value changes on financial asset at fair",
+    "Fair value changes on financial asset at fair value through other comprehensive income – net of tax",
+    -557.0
+   ],
+   [
+    "Actuarial gain on defined benefit obligations – net of tax",
     null
    ],
    [
-    "value through other comprehensive income –",
-    null
-   ],
-   [
-    "net of tax",
-    -557
-   ],
-   [
-    "Actuarial gain on defined benefit obligations –",
-    null
-   ],
-   [
-    "net of tax",
-    null
-   ],
-   [
-    "Total comprehensive (loss)/ income",
-    null
-   ],
-   [
-    "for the year",
-    -557
+    "Total comprehensive (loss)/ income for the year",
+    -557.0
    ],
    [
     "Final cash dividend paid",
@@ -3306,23 +3413,11 @@
     null
    ],
    [
-    "Fair value changes on financial asset at fair",
-    null
+    "Fair value changes on financial asset at fair value through other comprehensive income – net of tax",
+    -1163.0
    ],
    [
-    "value through other comprehensive income –",
-    null
-   ],
-   [
-    "net of tax",
-    -1163
-   ],
-   [
-    "Actuarial loss on defined benefit obligations –",
-    null
-   ],
-   [
-    "net of tax",
+    "Actuarial loss on defined benefit obligations – net of tax",
     null
    ],
    [
@@ -3330,11 +3425,7 @@
     null
    ],
    [
-    "Transfer of realized loss on sale of FVOCI",
-    null
-   ],
-   [
-    "financial asset shares",
+    "Transfer of realized loss on sale of FVOCI financial asset shares",
     17142
    ],
    [

@@ -10,7 +10,16 @@ const state = {
   files:[], file:null, tables:[], order:[], sel:new Set(),
   active:null, zoom:false, edits:{}, reTimers:{}, cmp:null,
   page:1, pageCount:null, box:null, searchQ:"", searchHits:null, quickfind:null,
+  telecomCandidates:null, telecomHighlight:null,
   sideBySide:_savedSideBySide, pickerZoom:false, undoStack:{},
+  // Detected/edited table grid for the box currently drawn on the picker
+  // canvas -- {bbox:[x0,y0,x1,y1], rows:[[top,bot],...], cols:[[x0,x1],...]}
+  // in PDF-point space (same units state.box converts to via /PICKER_SCALE
+  // at extraction time), or null when nothing's been detected/edited yet.
+  grid:null,
+  // "row"|"col" while a toolbar "+ line" button is armed (next canvas click
+  // inserts a line there and disarms), else null.
+  gridInsertMode:null,
 };
 
 // -------------------------------------------------- per-file UI state -----
@@ -65,14 +74,35 @@ const REAL_STMT = new Set(Object.keys(KIND_I18N_KEY).filter(k=>k!=="note"&&k!=="
 // stays correct regardless of what it resolves to.
 const DPR = Math.min(2, window.devicePixelRatio || 1);
 const PICKER_SCALE = Math.min(4.5, 2.2 * DPR);
+// how far (in PDF points) a dragged grid line has to cross the table's own
+// outer edge before release removes it instead of just moving it there --
+// generous enough that it can't be triggered by an imprecise drag near the
+// edge, small enough to still feel like a deliberate, quick gesture.
+const GRID_LINE_REMOVE_MARGIN_PT = 15;
 // `f` is the matching entry from the response's "fmt" side-channel (same
-// shape as "rows") -- {p: prefix, s: suffix} the source text carried (a
-// currency symbol, a '%') that the VALUE itself can't keep (it has to stay
-// a plain number for Δ / Δ% and every arithmetic check), so the display
-// text re-adds it without touching the underlying value at all.
-const fmt = (v, f) => (typeof v === "number")
-  ? (f ? (f.p||"") : "") + v.toLocaleString(undefined,{maximumFractionDigits:2}) + (f ? (f.s||"") : "")
-  : (v ?? "");
+// shape as "rows") -- {p: prefix, s: suffix, n: paren_negative} the source
+// text carried (a currency symbol, a '%', "(1,234)" instead of "-1,234")
+// that the VALUE itself can't keep (it has to stay a plain signed number
+// for Δ / Δ% and every arithmetic check), so the display text re-adds it
+// without touching the underlying value at all.
+const fmt = (v, f, isHdr) => {
+  if (typeof v !== "number") return v ?? "";
+  // a header cell holds a YEAR ("2025"), not a quantity -- thousands-
+  // grouping it as "2,025" reads as wrong, not as more readable, the way
+  // it would for a real figure. No prefix/suffix/paren cosmetics apply to
+  // a header cell either way, so this is a full early return, not just
+  // skipping the comma.
+  if (isHdr) return String(v);
+  const neg = !!(f && f.n && v < 0);
+  const n = neg ? -v : v;
+  const prefix = f ? (f.p||"") : "";
+  // a currency CODE reads naturally with a space ("AED 1,234"); a currency
+  // SYMBOL doesn't ("$1,234", not "$ 1,234") -- matches tablekit/parse.py's
+  // FormattedNumber.formatted(), which the Excel export already uses
+  const sep = /^[A-Za-z]+$/.test(prefix) ? " " : "";
+  const body = prefix + sep + n.toLocaleString(undefined,{maximumFractionDigits:2}) + (f ? (f.s||"") : "");
+  return neg ? `(${body})` : body;
+};
 const nameOf = tbl => REAL_STMT.has(tbl.kind)
   ? kindName(tbl.kind) + (tbl.years && tbl.years[0] ? ` ${tbl.years[0]}` : "")
   : (tbl.title||"").slice(0,46);
@@ -287,6 +317,10 @@ const I18N = {
     pageCap: "Page {page}", fitWidth: "Fit width", actualSize: "Actual size",
     extractBtn: "Extract this region →", extracting: "Extracting…", runningOcr: "Running OCR…",
     locatingStatements: "locating the financial statements…", jumpTo: "Jump to:",
+    telecomPl: "P&L", telecomNote: "Opex note",
+    detectingGrid: "detecting table grid…",
+    addRowLine: "+ Row line", addColLine: "+ Column line",
+    noteColHeader: "Note",
     typeAtLeast2: "type at least 2 characters", searching: "searching…",
     searchFailed: "search failed: {msg}", noMatches: "no matches",
     pageCountFailed: "Couldn't get this PDF's page count: {msg} — try again",
@@ -391,6 +425,10 @@ const I18N = {
     pageCap: "صفحة {page}", fitWidth: "احتواء العرض", actualSize: "الحجم الفعلي",
     extractBtn: "استخراج هذه المنطقة →", extracting: "جارٍ الاستخراج…", runningOcr: "جارٍ التعرف الضوئي…",
     locatingStatements: "جارٍ تحديد موقع القوائم المالية…", jumpTo: "الانتقال إلى:",
+    telecomPl: "الأرباح والخسائر", telecomNote: "إيضاح المصروفات",
+    detectingGrid: "جارٍ اكتشاف شبكة الجدول…",
+    addRowLine: "+ خط صف", addColLine: "+ خط عمود",
+    noteColHeader: "إيضاح",
     typeAtLeast2: "اكتب حرفين على الأقل", searching: "جارٍ البحث…",
     searchFailed: "فشل البحث: {msg}", noMatches: "لا توجد نتائج",
     pageCountFailed: "تعذّر الحصول على عدد صفحات هذا الملف: {msg} — حاول مجددًا",
@@ -627,8 +665,9 @@ async function loadFile(name, opts={}){
   // guards against it firing against the wrong file, so this is just tidying the
   // tracking object, not relying on it to cancel anything
   state.reTimers = {};
-  state.page = 1; state.pageCount = null; state.box = null;
+  state.page = 1; state.pageCount = null; state.box = null; state.grid = null;
   state.searchQ = ""; state.searchHits = null; state.quickfind = null;
+  state.telecomCandidates = null; state.telecomHighlight = null;
   setControlsEnabled(true);
   syncExport(); renderTray();
   $("#fileName").value = name.replace(/\.pdf$/i,"") + " — " + t('brand').toLowerCase();
@@ -668,6 +707,14 @@ async function loadFile(name, opts={}){
   jget("/api/quickfind?file="+encodeURIComponent(name)).then(res=>{
     state.quickfind = res.hits || [];
     if (state.file === name) renderQuickfind();
+  }).catch(()=>{});
+  // fire-and-forget: du/Etisalat-only fuzzy-match table finder (see
+  // telecom_candidates in serve.py) -- resolves to {available:false} for
+  // any other file, so this is safe to always fire unconditionally; the
+  // strict file-name gating lives server-side, not duplicated here.
+  jget("/api/telecom_candidates?file="+encodeURIComponent(name)).then(res=>{
+    state.telecomCandidates = res;
+    if (state.file === name) renderTelecomCandidates();
   }).catch(()=>{});
 }
 
@@ -862,10 +909,15 @@ function renderPicker(){
     </div>
     <div id="searchResults"></div>
     <div id="quickfindRow"></div>
+    <div id="telecomRow"></div>
     <div id="extractToasts"></div>
     <div class="pv-lines">${t('dragBoxHint')}</div>
     <div class="card">
-      <div class="cap">${t('pageCap',{page:state.page})}<span class="spacer"></span>
+      <div class="cap">${t('pageCap',{page:state.page})}
+        <span class="grid-status" id="gridStatus" hidden>${t('detectingGrid')}</span>
+        <span class="spacer"></span>
+        <button class="mini" id="addRowLineBtn" ${state.grid?"":"disabled"}>${t('addRowLine')}</button>
+        <button class="mini" id="addColLineBtn" ${state.grid?"":"disabled"}>${t('addColLine')}</button>
         <button class="mini" id="pickerZoomBtn">${state.pickerZoom?t('fitWidth'):t('actualSize')}</button>
         <button class="btn-primary" id="extractBtn" disabled>${t('extractBtn')}</button></div>
       <div class="pagebox ${state.pickerZoom?"actual":""}" id="pickerBox"><div class="picker-stage" id="pickerStage">
@@ -887,12 +939,15 @@ function renderPicker(){
     $("#pickerBox").classList.toggle("actual", state.pickerZoom);
     $("#pickerZoomBtn").textContent = state.pickerZoom ? t('fitWidth') : t('actualSize');
   };
+  $("#addRowLineBtn").onclick = ()=> setGridInsertMode(state.gridInsertMode === "row" ? null : "row");
+  $("#addColLineBtn").onclick = ()=> setGridInsertMode(state.gridInsertMode === "col" ? null : "col");
   $("#searchBtn").onclick = runSearch;
   $("#searchQ").onkeydown = e=>{ if (e.key==="Enter"){ e.preventDefault(); runSearch(); } };
   const sc = $("#searchClear");
   if (sc) sc.onclick = ()=>{ state.searchQ=""; state.searchHits=null; renderPicker(); loadPickerPage(state.page); };
   if (state.searchHits) renderSearchResults();
   renderQuickfind();
+  renderTelecomCandidates();
 }
 
 function renderQuickfind(){
@@ -909,6 +964,39 @@ function renderQuickfind(){
     ${hits.map(h=>`<button class="chip" data-pg="${h.page}">${h.label} · p${h.page}</button>`).join("")}
   </div>`;
   el.querySelectorAll(".chip").forEach(b=> b.onclick = ()=>gotoPage(+b.dataset.pg));
+}
+
+// du/Etisalat-only fuzzy-match table finder (telecom_candidates in serve.py,
+// itself calling telecom_extract.py's find_candidate_locations). Renders as
+// plain "Jump to"-style chips, same visual language as renderQuickfind --
+// unlike quickfind (one chip per label, first page only), a target here can
+// legitimately produce more than one chip when more than one candidate
+// cleared the scoring gate (e.g. two "P&L" chips on different pages).
+function renderTelecomCandidates(){
+  const el = $("#telecomRow");
+  if (!el) return;
+  const data = state.telecomCandidates;
+  if (!data || !data.available || !data.candidates.length){ el.innerHTML = ""; return; }
+  const short = {pl: t('telecomPl'), note: t('telecomNote')};
+  el.innerHTML = `<div class="quickfind">
+    <span class="msg" style="padding:0">${t('jumpTo')}</span>
+    ${data.candidates.map(c=>`<button class="chip" data-pg="${c.page}"
+      data-bbox="${c.bbox.join(',')}">${short[c.target]||c.target} · p${c.page}</button>`).join("")}
+  </div>`;
+  el.querySelectorAll(".chip").forEach(b=>{
+    b.onclick = ()=>gotoTelecomCandidate(+b.dataset.pg, b.dataset.bbox.split(",").map(Number));
+  });
+}
+
+// Not a bare gotoPage(n) call: gotoPage no-ops when n === state.page, which
+// would silently swallow a click on a SECOND candidate chip already on the
+// page being viewed -- a page can legitimately have more than one candidate,
+// and each chip's highlight must still take effect.
+function gotoTelecomCandidate(page, bbox){
+  state.box = null; state.grid = null;
+  state.telecomHighlight = {page, bbox};
+  if (page === state.page) loadPickerPage(page);
+  else gotoPage(page);
 }
 
 async function runSearch(){
@@ -951,7 +1039,7 @@ function renderSearchResults(){
 function gotoPage(n){
   n = Math.max(1, Math.min(state.pageCount||1, n));
   if (n === state.page && $("#pgImg")) return;
-  state.page = n; state.box = null;
+  state.page = n; state.box = null; state.grid = null;
   renderPicker();
   loadPickerPage(n);
 }
@@ -960,6 +1048,8 @@ async function loadPickerPage(n){
   const img = $("#pgImg");
   let src = `/api/page_raw?file=${encodeURIComponent(state.file)}&n=${n}&scale=${PICKER_SCALE}`;
   if (state.searchQ) src += `&hl=${encodeURIComponent(state.searchQ)}`;
+  if (state.telecomHighlight && state.telecomHighlight.page === n)
+    src += `&bbox=${state.telecomHighlight.bbox.join(",")}`;
   img.src = src;
   img.alt = t('pageCap', {page: n});
   await new Promise(res=>{ img.onload = res; img.onerror = res; });
@@ -978,6 +1068,8 @@ async function loadPickerPage(n){
 function wireCanvas(cv){
   const ctx = cv.getContext("2d");
   let drag = null;
+  let lineDrag = null;
+  let insertCandidate = null;
   // pointer events report offsetX/offsetY in the canvas's DISPLAYED (CSS)
   // size, which can now be smaller than its drawing-buffer resolution
   // (scaled down to fit the pane) -- convert to buffer space before using.
@@ -985,6 +1077,10 @@ function wireCanvas(cv){
     const rx = cv.width / cv.clientWidth, ry = cv.height / cv.clientHeight;
     return [x * rx, y * ry];
   };
+  // grid-line grab tolerance, kept a constant ~8 CSS px regardless of zoom
+  // (same reasoning as toBuffer -- the ratio flips a DISPLAYED distance into
+  // the BUFFER space these events and state.box/state.grid both live in).
+  const lineHitTol = () => 8 * ((cv.width / cv.clientWidth) || 1);
   const redraw = (x0,y0,x1,y1)=>{
     ctx.clearRect(0,0,cv.width,cv.height);
     const x=Math.min(x0,x1), y=Math.min(y0,y1), w=Math.abs(x1-x0), h=Math.abs(y1-y0);
@@ -994,17 +1090,84 @@ function wireCanvas(cv){
     ctx.strokeStyle = hex; ctx.lineWidth = 2; ctx.strokeRect(x,y,w,h);
   };
   cv.onpointerdown = e=>{
-    cv.setPointerCapture(e.pointerId);
     const [bx,by] = toBuffer(e.offsetX, e.offsetY);
+    // an armed "+ Row/Column line" button takes priority over everything
+    // else -- the next click anywhere on the canvas places that line
+    if (state.gridInsertMode && state.grid){
+      cv.setPointerCapture(e.pointerId);
+      insertCandidate = {axis: state.gridInsertMode};
+      return;
+    }
+    // an existing grid's own lines take priority over starting a fresh box
+    // -- grabbing near one begins a drag-to-adjust instead of a new selection
+    const hit = state.grid ? hitTestGridLine(state.grid, PICKER_SCALE, bx, by, lineHitTol()) : null;
+    if (hit){
+      cv.setPointerCapture(e.pointerId);
+      lineDrag = {axis: hit.axis, oldPdfValue: hit.pdfValue};
+      return;
+    }
+    cv.setPointerCapture(e.pointerId);
     drag = {x0:bx, y0:by, dispX0:e.offsetX, dispY0:e.offsetY};
     const eb = $("#extractBtn"); if (eb) eb.disabled = true;
   };
   cv.onpointermove = e=>{
-    if (!drag) return;
-    const [bx,by] = toBuffer(e.offsetX, e.offsetY);
-    redraw(drag.x0, drag.y0, bx, by);
+    if (insertCandidate){ return; }   // placed on release -- see onpointerup
+    if (lineDrag){
+      const [bx,by] = toBuffer(e.offsetX, e.offsetY);
+      const newPdfValue = (lineDrag.axis === "row" ? by : bx) / PICKER_SCALE;
+      // always recompute from state.grid (the untouched original) anchored
+      // on the drag's starting position, not the previous frame's already-
+      // moved result -- applying moveGridLine cumulatively would both drift
+      // and stop matching oldPdfValue after the first frame
+      lineDrag.workingGrid = moveGridLine(state.grid, lineDrag.axis, lineDrag.oldPdfValue, newPdfValue);
+      redrawPickerCanvas(lineDrag.workingGrid);
+      return;
+    }
+    if (drag){
+      const [bx,by] = toBuffer(e.offsetX, e.offsetY);
+      redraw(drag.x0, drag.y0, bx, by);
+      return;
+    }
+    if (state.gridInsertMode){ cv.style.cursor = "crosshair"; return; }
+    // idle hover: swap the cursor near a draggable grid line so the
+    // affordance is discoverable before the user commits to a click
+    if (state.grid){
+      const [bx,by] = toBuffer(e.offsetX, e.offsetY);
+      const hit = hitTestGridLine(state.grid, PICKER_SCALE, bx, by, lineHitTol());
+      cv.style.cursor = hit ? (hit.axis === "row" ? "row-resize" : "col-resize") : "";
+    }
   };
   cv.onpointerup = e=>{
+    if (insertCandidate){
+      const [bx,by] = toBuffer(e.offsetX, e.offsetY);
+      const pdfValue = (insertCandidate.axis === "row" ? by : bx) / PICKER_SCALE;
+      if (state.grid) state.grid = insertGridLine(state.grid, insertCandidate.axis, pdfValue);
+      insertCandidate = null;
+      setGridInsertMode(null);
+      cv.style.cursor = "";
+      redrawPickerCanvas();
+      return;
+    }
+    if (lineDrag){
+      const [bx,by] = toBuffer(e.offsetX, e.offsetY);
+      const newPdfValue = (lineDrag.axis === "row" ? by : bx) / PICKER_SCALE;
+      // dragging a line past the table's own outer edge (by a clear margin,
+      // not just a slightly-imprecise release near it) removes it instead
+      // of moving it there -- reuses the same drag the user already started
+      const [gx0, gy0, gx1, gy1] = state.grid.bbox;
+      const past = lineDrag.axis === "row"
+        ? (newPdfValue < gy0 - GRID_LINE_REMOVE_MARGIN_PT || newPdfValue > gy1 + GRID_LINE_REMOVE_MARGIN_PT)
+        : (newPdfValue < gx0 - GRID_LINE_REMOVE_MARGIN_PT || newPdfValue > gx1 + GRID_LINE_REMOVE_MARGIN_PT);
+      // commit the edit -- and deliberately do NOT call detectGrid() here:
+      // that would silently overwrite the user's own manual correction with
+      // a fresh auto-detection the instant they let go of the mouse
+      state.grid = past
+        ? removeGridLine(state.grid, lineDrag.axis, lineDrag.oldPdfValue)
+        : moveGridLine(state.grid, lineDrag.axis, lineDrag.oldPdfValue, newPdfValue);
+      lineDrag = null;
+      redrawPickerCanvas();
+      return;
+    }
     if (!drag) return;
     // the "too small, ignore it" check is in DISPLAYED pixels (what the user
     // actually dragged), not buffer pixels -- otherwise, once the page is
@@ -1018,8 +1181,239 @@ function wireCanvas(cv){
     // state.box stays in the canvas's BUFFER (native render-pixel) space,
     // same as before -- doExtractRegion's ÷PICKER_SCALE conversion is unchanged
     state.box = [Math.min(x0,x1), Math.min(y0,y1), Math.max(x0,x1), Math.max(y0,y1)];
+    // the PREVIOUS grid (if any) belonged to the box we just replaced --
+    // clear it now rather than leave a stale, now-misleading grid on
+    // screen while the fresh detection request is in flight
+    state.grid = null;
+    syncGridEditButtons();
     const eb = $("#extractBtn"); if (eb) eb.disabled = false;
+    detectGrid();
   };
+}
+
+// Pure, DOM-free: converts a detected grid (state.grid -- bbox/rows/cols all
+// in PDF-point space, as returned by /api/detect_grid) into line segments in
+// canvas BUFFER-pixel space (same space state.box lives in). Row/column
+// bands become boundary lines at each band's edges -- adjacent bands share
+// a (near-)identical edge, so this draws one line there, not two on top of
+// each other in practice, but even a genuine gap between bands just means
+// two nearby lines instead of one, never a wrong or missing one.
+// Kept side-effect-free so the JS test harness (node:vm, no real canvas) can
+// exercise the coordinate math directly -- see tablekit_tests/js/test_webui_logic.js.
+function gridLinesInBufferSpace(grid, scale){
+  if (!grid) return {bbox:null, hLines:[], vLines:[]};
+  const [bx0, by0, bx1, by1] = grid.bbox.map(v=>v*scale);
+  const rowYs = new Set();
+  (grid.rows||[]).forEach(([top,bot])=>{ rowYs.add(top*scale); rowYs.add(bot*scale); });
+  const colXs = new Set();
+  (grid.cols||[]).forEach(([x0,x1])=>{ colXs.add(x0*scale); colXs.add(x1*scale); });
+  const hLines = [...rowYs].sort((a,b)=>a-b).map(y=>({y, x0:bx0, x1:bx1}));
+  const vLines = [...colXs].sort((a,b)=>a-b).map(x=>({x, y0:by0, y1:by1}));
+  return {bbox:[bx0,by0,bx1,by1], hLines, vLines};
+}
+
+// Pure, DOM-free: finds the grid boundary line (row or column) nearest a
+// buffer-space point, within tolerancePx (also buffer space) -- null when
+// nothing is close enough. Shared by the pointerdown hit-test (does this
+// drag adjust an existing line, or start a new box?) and the idle-hover
+// cursor swap, so both always agree on what counts as "on a line".
+function hitTestGridLine(grid, scale, bufX, bufY, tolerancePx){
+  if (!grid) return null;
+  const {bbox, hLines, vLines} = gridLinesInBufferSpace(grid, scale);
+  if (!bbox) return null;
+  const [bx0, by0, bx1, by1] = bbox;
+  let best = null, bestDist = tolerancePx;
+  // a row line spans the full bbox WIDTH at a fixed y -- only a candidate
+  // when the point falls within that horizontal span (± tolerance)
+  if (bufX >= bx0 - tolerancePx && bufX <= bx1 + tolerancePx){
+    for (const line of hLines){
+      const d = Math.abs(bufY - line.y);
+      if (d <= bestDist){ bestDist = d; best = {axis:"row", pdfValue: line.y/scale}; }
+    }
+  }
+  // symmetric check for column lines, which span the full bbox HEIGHT --
+  // strictly-less so a dead-even tie (near a corner) keeps the row hit above
+  if (bufY >= by0 - tolerancePx && bufY <= by1 + tolerancePx){
+    for (const line of vLines){
+      const d = Math.abs(bufX - line.x);
+      if (d < bestDist){ bestDist = d; best = {axis:"col", pdfValue: line.x/scale}; }
+    }
+  }
+  return best;
+}
+
+// Pure: returns a NEW grid with the boundary at oldPdfValue (on the given
+// axis) moved to newPdfValue. Every band edge -- and the overall bbox edge,
+// if either was sitting at that same boundary -- that matches oldPdfValue
+// (within eps, to absorb the px/pt round-trip's own float noise) moves
+// together, so adjacent bands stay contiguous instead of opening a gap.
+// No neighbor-crossing clamp on purpose -- dragging a line past its
+// neighbor is allowed; add a clamp only if real use shows it's needed.
+function moveGridLine(grid, axis, oldPdfValue, newPdfValue, eps){
+  const tol = eps == null ? 0.5 : eps;
+  const at = v => Math.abs(v - oldPdfValue) <= tol;
+  const moveBand = ([a,b]) => [at(a) ? newPdfValue : a, at(b) ? newPdfValue : b];
+  const [bx0, by0, bx1, by1] = grid.bbox;
+  if (axis === "row"){
+    return {bbox:[bx0, at(by0)?newPdfValue:by0, bx1, at(by1)?newPdfValue:by1],
+            rows: grid.rows.map(moveBand), cols: grid.cols};
+  }
+  return {bbox:[at(bx0)?newPdfValue:bx0, by0, at(bx1)?newPdfValue:bx1, by1],
+          rows: grid.rows, cols: grid.cols.map(moveBand)};
+}
+
+// Pure: returns a NEW grid with a fresh boundary inserted at pdfValue on the
+// given axis. A position inside an existing band splits that band in two;
+// a position beyond every band extends the grid with a new outer band
+// (this is how "+ Row line"/"+ Column line" can also grow the table, not
+// just subdivide it); a position already on an existing boundary (within
+// eps) is a no-op -- there's nothing to split.
+function insertGridLine(grid, axis, pdfValue, eps){
+  const tol = eps == null ? 0.5 : eps;
+  const bands = axis === "row" ? grid.rows : grid.cols;
+  const containing = bands.find(([a,b]) => pdfValue > a + tol && pdfValue < b - tol);
+  let newBands;
+  if (containing){
+    newBands = bands.flatMap(band => band === containing
+      ? [[band[0], pdfValue], [pdfValue, band[1]]]
+      : [band]);
+  } else if (bands.some(([a,b]) => Math.abs(a-pdfValue)<=tol || Math.abs(b-pdfValue)<=tol)){
+    return grid;
+  } else {
+    const firstStart = Math.min(...bands.map(b=>b[0]));
+    const lastEnd = Math.max(...bands.map(b=>b[1]));
+    newBands = pdfValue < firstStart
+      ? [[pdfValue, firstStart], ...bands]
+      : [...bands, [lastEnd, pdfValue]];
+  }
+  newBands = newBands.slice().sort((p,q)=>p[0]-q[0]);
+  const newStart = Math.min(...newBands.map(b=>b[0])), newEnd = Math.max(...newBands.map(b=>b[1]));
+  const [bx0, by0, bx1, by1] = grid.bbox;
+  if (axis === "row"){
+    return {bbox:[bx0, Math.min(by0,newStart), bx1, Math.max(by1,newEnd)], rows:newBands, cols:grid.cols};
+  }
+  return {bbox:[Math.min(bx0,newStart), by0, Math.max(bx1,newEnd), by1], rows:grid.rows, cols:newBands};
+}
+
+// Pure: returns a NEW grid with the boundary at pdfValue (± eps) removed.
+// An INTERIOR boundary merges its two neighboring bands into one; the
+// OUTERMOST boundary (the bbox's own edge) instead drops that one outer
+// band entirely, since there's nothing on the far side to merge it into.
+// Refuses (returns grid unchanged) rather than guessing when a boundary
+// doesn't cleanly match either shape (more than one band sharing the same
+// edge -- a known, rare upstream-detection artifact) or when only one band
+// remains on that axis (a table needs at least one row and one column).
+function removeGridLine(grid, axis, pdfValue, eps){
+  const tol = eps == null ? 0.5 : eps;
+  const bands = axis === "row" ? grid.rows : grid.cols;
+  if (bands.length <= 1) return grid;
+  const at = v => Math.abs(v - pdfValue) <= tol;
+  const asEnd = bands.filter(([,b]) => at(b));
+  const asStart = bands.filter(([a]) => at(a));
+  let newBands;
+  if (asEnd.length === 1 && asStart.length === 1 && asEnd[0] !== asStart[0]){
+    const merged = [asEnd[0][0], asStart[0][1]];
+    newBands = bands.filter(b => b !== asEnd[0] && b !== asStart[0]);
+    newBands.push(merged);
+  } else if (asEnd.length === 0 && asStart.length === 1){
+    newBands = bands.filter(b => b !== asStart[0]);
+  } else if (asStart.length === 0 && asEnd.length === 1){
+    newBands = bands.filter(b => b !== asEnd[0]);
+  } else {
+    return grid;
+  }
+  newBands.sort((p,q)=>p[0]-q[0]);
+  const newStart = newBands[0][0], newEnd = newBands[newBands.length-1][1];
+  const [bx0, by0, bx1, by1] = grid.bbox;
+  if (axis === "row"){
+    return {bbox:[bx0, newStart, bx1, newEnd], rows:newBands, cols:grid.cols};
+  }
+  return {bbox:[newStart, by0, newEnd, by1], rows:grid.rows, cols:newBands};
+}
+
+// Re-queries #boxCanvas fresh each call (rather than closing over one canvas
+// element) so a stale reference can never write to a canvas that
+// loadPickerPage() has since replaced via its innerHTML rebuild -- the same
+// hazard a stray reference to the pre-navigation canvas would otherwise hit
+// if a detectGrid() response lands after the user has already turned the page.
+// overrideGrid, when passed (even null), is drawn INSTEAD of state.grid --
+// used during a live line-drag to preview the edit before it's committed.
+function redrawPickerCanvas(overrideGrid){
+  const cv = $("#boxCanvas");
+  if (!cv) return;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0,0,cv.width,cv.height);
+  // the canvas's drawing BUFFER can be several times larger than its
+  // DISPLAYED (CSS) size (fit-width mode downscales a full-resolution page
+  // render) -- a stroke width chosen in buffer pixels must scale up by that
+  // same ratio or it shrinks to a sub-pixel, effectively invisible line
+  // once the browser downscales it for display. The drag-box's own
+  // lineWidth:2 gets away without this only because its semi-transparent
+  // FILL (not its thin border) is what actually makes it visible.
+  const dispScale = (cv.clientWidth ? cv.width / cv.clientWidth : 1) || 1;
+  if (state.box){
+    const [x0,y0,x1,y1] = state.box;
+    const hex = (getComputedStyle(document.documentElement).getPropertyValue("--accent").trim()) || "#d4af37";
+    const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+    ctx.fillStyle = `rgba(${r},${g},${b},.18)`; ctx.fillRect(x0,y0,x1-x0,y1-y0);
+    ctx.strokeStyle = hex; ctx.lineWidth = 2 * dispScale; ctx.strokeRect(x0,y0,x1-x0,y1-y0);
+  }
+  const grid = overrideGrid !== undefined ? overrideGrid : state.grid;
+  if (grid){
+    const {hLines, vLines} = gridLinesInBufferSpace(grid, PICKER_SCALE);
+    const gHex = (getComputedStyle(document.documentElement).getPropertyValue("--grid-line").trim()) || "#4f46e5";
+    ctx.strokeStyle = gHex; ctx.lineWidth = 1.5 * dispScale;
+    hLines.forEach(({y,x0,x1})=>{ ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke(); });
+    vLines.forEach(({x,y0,y1})=>{ ctx.beginPath(); ctx.moveTo(x,y0); ctx.lineTo(x,y1); ctx.stroke(); });
+  }
+}
+
+// Bumped on every call so a response that's no longer the LATEST request
+// (superseded by a newer drag, or the box got cleared entirely by a page
+// nav / completed extraction before this one returned) is a silent no-op
+// instead of resurrecting a grid for a box that's no longer selected.
+let _gridDetectToken = 0;
+async function detectGrid(){
+  if (!state.box) return;
+  const token = ++_gridDetectToken;
+  const pdfBox = state.box.map(v=>v/PICKER_SCALE);
+  const showStatus = (visible)=>{ const el = $("#gridStatus"); if (el) el.hidden = !visible; };
+  showStatus(true);
+  try{
+    // always resolves HTTP 200 (available:true/false), never throws for
+    // "nothing detected" -- a rough drag over blank margin is routine here,
+    // not an error (unlike /api/extract_region's one deliberate click)
+    const d = await jpost("/api/detect_grid", {file:state.file, page:state.page, bbox:pdfBox});
+    if (token !== _gridDetectToken || !state.box) return;
+    state.grid = d.available ? {bbox:d.bbox, rows:d.rows, cols:d.cols} : null;
+    syncGridEditButtons();
+    redrawPickerCanvas();
+  }catch(e){
+    // best-effort preview only -- extraction reads only state.box, so a
+    // failed detection just leaves the plain box on screen with no overlay
+  } finally {
+    if (token === _gridDetectToken) showStatus(false);
+  }
+}
+
+// The "+ Row line"/"+ Column line" toolbar buttons only make sense once a
+// grid exists to add a line to -- kept in sync imperatively (same pattern
+// as #extractBtn's own disabled toggling) rather than by re-rendering the
+// whole picker toolbar every time state.grid changes.
+function syncGridEditButtons(){
+  const rowBtn = $("#addRowLineBtn"), colBtn = $("#addColLineBtn");
+  if (rowBtn) rowBtn.disabled = !state.grid;
+  if (colBtn) colBtn.disabled = !state.grid;
+}
+
+// Arms (or disarms, on a repeat call with the same axis) one-shot
+// insert-a-line mode: the NEXT canvas click places a line at that spot,
+// then disarms itself. axis is "row"|"col"|null.
+function setGridInsertMode(axis){
+  state.gridInsertMode = axis;
+  const rowBtn = $("#addRowLineBtn"), colBtn = $("#addColLineBtn");
+  if (rowBtn) rowBtn.classList.toggle("armed", axis === "row");
+  if (colBtn) colBtn.classList.toggle("armed", axis === "col");
 }
 
 async function doExtractRegion(){
@@ -1028,8 +1422,10 @@ async function doExtractRegion(){
   b.disabled = true; b.textContent = t("extracting");
   try{
     const pdfBox = state.box.map(v=>v/PICKER_SCALE);
+    // state.grid is already in PDF-point space (see detectGrid/moveGridLine)
+    // -- no ÷PICKER_SCALE needed, unlike pdfBox above
     const d = await jpost("/api/extract_region",
-      {file:state.file, page:state.page, bbox:pdfBox});
+      {file:state.file, page:state.page, bbox:pdfBox, grid: state.grid || null});
     await _afterExtract(d);
   }catch(e){
     // OCR is a failsafe the user clicks, never something that fires on its
@@ -1070,7 +1466,7 @@ async function _afterExtract(d){
   // away -- clear the box and show a small confirmation. The result also
   // shows up immediately in the detail pane right beside the picker
   // (they're both always on screen now), no click needed to "go look at it".
-  state.box = null;
+  state.box = null; state.grid = null;
   const cv = $("#boxCanvas");
   if (cv) cv.getContext("2d").clearRect(0,0,cv.width,cv.height);
   showExtractToast(d);
@@ -1224,8 +1620,24 @@ function renderPreview(n, d){
       // not the bare 26.6 behind it) -- commitCell diffs against this, not
       // against rows[r][c], so merely clicking into a $/%-formatted cell and
       // clicking back out isn't mistaken for an edit.
-      const shown = fmt(c, fRow && fRow[ci]);
+      const shown = fmt(c, fRow && fRow[ci], isHdr);
       tds += `<td class="${kl}"${title} data-r="${i}" data-c="${ci}" data-orig="${shown.replace(/"/g,"&quot;")}" contenteditable="plaintext-only">${shown}</td>`;
+      // the PDF's own "Note" reference column (e.g. "19", "21") -- right
+      // after the label, matching where the source PDF prints it. Display
+      // only, deliberately kept OUT of the editable grid (no data-r/data-c,
+      // not part of `rows`/ncols) so it can never shift cell-edit
+      // coordinates or the footing/value-column math, which all still run
+      // on note-free rows (see extract_all_tables.row_note_ref).
+      if (ci===0 && d.note_refs){
+        // a row ABOVE the last header row can coincidentally look up a
+        // real match in note_ref_map too (e.g. a header row literally
+        // reading "Notes" as a column heading) -- row_note_ref only means
+        // anything for a real data row, so every row through hi shows
+        // either blank or (on the last one) the literal column label,
+        // never a value looked up for that row.
+        const ref = i===hi ? t('noteColHeader') : (i<hi ? null : (!ed && d.note_refs[i]));
+        tds += `<td class="notecol">${ref==null?"":ref}</td>`;
+      }
     }
     if (showDelta && !isHdr){
       const a=r[vc[0]], b=r[vc[1]];
@@ -1513,6 +1925,7 @@ $("#exportBtn").onclick = async ()=>{
 
 document.addEventListener("keydown", e=>{
   if (["INPUT","TD","TEXTAREA","SELECT"].includes(document.activeElement.tagName)) return;
+  if (e.key === "Escape" && state.gridInsertMode){ setGridInsertMode(null); return; }
   if (!state.tables.length) return;
   const ord = state.tables.map(t=>t.n);
   const i = ord.indexOf(state.active);

@@ -19,6 +19,7 @@ import json
 import logging
 import pickle
 import re
+import secrets
 import socket
 import sys
 import threading
@@ -82,7 +83,41 @@ _state: dict[str, Any] = {
     "deleted": {},                # name -> [idx, idx, ...] most-recent-last, for undelete
     "pngs": {},                  # (name, n, scale) -> bytes
     "pagetext": {},               # name -> [page1 text, page2 text, ...]  for search
+    "telecom": {},                # name -> {"mtime": float, "result": {...}}
 }
+
+# Opt-in only (--allow-remote): None by default, meaning every check below
+# that starts "if _REMOTE_PASSCODE" short-circuits to False and this whole
+# gate is completely inert -- normal `python serve.py` usage is provably
+# unaffected by any of this. When set, a random passcode (printed once at
+# startup, never written to disk or logged) is required before ANY route
+# responds, GET or POST, from a session that hasn't already proven it via
+# /login. This exists for one specific case: deliberately exposing this
+# local server through a tunnel for a short remote demo, where the origin
+# check below (do_POST) can't tell "the person who owns this machine,
+# reaching it through their own tunnel" apart from an actual cross-origin
+# attacker -- a real passcode can. Sessions are in-memory only (a plain
+# set of random tokens), so they don't survive a restart, which is fine for
+# what this is for.
+_REMOTE_PASSCODE: str | None = None
+_AUTH_SESSIONS: set[str] = set()
+_SESSION_COOKIE = "tk_session"
+
+
+def _session_token(handler) -> str | None:
+    raw = handler.headers.get("Cookie", "")
+    for part in raw.split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == _SESSION_COOKIE and v:
+            return v
+    return None
+
+
+def _is_authed(handler) -> bool:
+    if not _REMOTE_PASSCODE:
+        return True   # gate is off entirely
+    tok = _session_token(handler)
+    return bool(tok and tok in _AUTH_SESSIONS)
 _lock = threading.RLock()
 
 
@@ -313,9 +348,10 @@ def page_count(name):
         return len(pdf.pages)
 
 
-def page_raw_png(name, n, scale, highlight=None):
+def page_raw_png(name, n, scale, highlight=None, bbox=None):
     highlight = (highlight or "").strip()
-    key = ("raw", name, n, round(scale, 2), highlight.lower())
+    key = ("raw", name, n, round(scale, 2), highlight.lower(),
+           tuple(round(v, 1) for v in bbox) if bbox else None)
     with _lock:
         if key in _state["pngs"]:
             return _state["pngs"][key]
@@ -335,6 +371,8 @@ def page_raw_png(name, n, scale, highlight=None):
                                 fill=(253, 224, 71, 90))
             except Exception:
                 LOG.debug("highlight search failed", exc_info=True)
+        if bbox:
+            _draw_candidate_box(im, page, bbox)
         buf = io.BytesIO()
         im.save(buf, format="PNG")
         data = buf.getvalue()
@@ -413,6 +451,53 @@ def quick_find_statements(name):
             for label, _ in _QUICKFIND_PATTERNS if label in found]
 
 
+# du/Etisalat's telecom_extract.py targets identify themselves by hint_key;
+# this just gives the browser a short, stable string instead of that key.
+_TELECOM_TARGET_SHORT = {"pl_hint": "pl", "admin_hint": "note"}
+
+
+def telecom_candidates(name):
+    """Locate-only fuzzy-match table finder for du/Etisalat/e& files: for
+    each of telecom_extract.py's 2 known targets per company (the P&L, the
+    operating-expenses note), every candidate location that cleared its
+    reference-vocabulary scoring gate -- NOT the full extraction. Deliberately
+    gated by strict_profile_for_file (no fallback): this must never run on a
+    file that isn't actually shaped like a du/Etisalat report, or it would
+    read as reviving the whole-document auto-detector this project already
+    removed once for being unreliable. Returns {"available": False,
+    "candidates": []} immediately, without ever opening the PDF, for any
+    file that doesn't strictly match."""
+    path = _path(name)
+    if path is None:
+        raise KeyError(name)
+    _te = getattr(X, "_te", None)
+    if not (getattr(X, "HAVE_RECON", False) and _te):
+        return {"available": False, "candidates": []}
+    key, profile = _te.strict_profile_for_file(path)
+    if key is None:
+        return {"available": False, "candidates": []}
+    mtime = path.stat().st_mtime
+    with _lock:
+        # .setdefault(), not _state["telecom"] -- a few tests replace _state
+        # wholesale with a dict that predates this key (see _manual_list's
+        # own comment for the same pattern).
+        cached = _state.setdefault("telecom", {}).get(name)
+        if cached and cached["mtime"] == mtime:
+            return cached["result"]
+    out = []
+    with pdfplumber.open(path) as pdf:
+        page_indices = range(len(pdf.pages))
+        for target in profile["targets"]:
+            for cand in _te.find_candidate_locations(pdf, page_indices, target):
+                out.append({**cand,
+                           "target": _TELECOM_TARGET_SHORT.get(target["hint_key"], "?"),
+                           "label": target["name"]})
+    result = {"available": True, "company": key, "candidates": out}
+    with _lock:
+        _state.setdefault("telecom", {})[name] = {"mtime": mtime, "result": result}
+    return result
+
+
 def _sanitize_filename(name):
     """Keep Unicode letters/digits plus a small set of safe punctuation;
     everything else becomes "_". str.isalnum() is Unicode-aware (unlike re's
@@ -450,11 +535,11 @@ def upload_pdf(filename, data_b64):
 
 
 @_autosaves
-def extract_region(name, page1, bbox, title=None):
+def extract_region(name, page1, bbox, title=None, grid=None):
     path = _path(name)
     if path is None:
         raise KeyError(name)
-    t = X.extract_region(path, page1 - 1, tuple(bbox), title or None)
+    t = X.extract_region(path, page1 - 1, tuple(bbox), title or None, grid=grid)
     if t is None:
         return None
     with _lock:
@@ -462,6 +547,18 @@ def extract_region(name, page1, bbox, title=None):
         manual.append(t)
         idx = len(manual)
     return _detail(t, MANUAL_OFFSET + idx)
+
+
+# Deliberately NOT @_autosaves -- that decorator pickles the whole session
+# to disk after every successful call (see its own docstring), which is
+# right for something that mutates saved state, but this fires on every
+# mouse-release during exploratory dragging and mutates nothing at all; a
+# disk write per drag would be pure waste.
+def detect_grid(name, page1, bbox):
+    path = _path(name)
+    if path is None:
+        raise KeyError(name)
+    return X.detect_grid(path, page1 - 1, tuple(bbox))
 
 
 @_autosaves
@@ -542,16 +639,18 @@ def inventory(name):
 
 
 def _fmt_row(row):
-    """A cell may carry a currency symbol and/or a '%' the user typed or the
-    extractor read (see tablekit.parse.FormattedNumber) that the numeric
-    VALUE itself never keeps -- it has to stay a plain number for footing,
-    health scoring and every arithmetic comparison to keep working. Rather
-    than change what `rows` sends (every existing consumer of a numeric cell,
+    """A cell may carry a currency symbol, a '%', and/or parentheses-as-
+    negative the user typed or the extractor read (see
+    tablekit.parse.FormattedNumber) that the numeric VALUE itself never
+    keeps -- it has to stay a plain signed number for footing, health
+    scoring and every arithmetic comparison to keep working. Rather than
+    change what `rows` sends (every existing consumer of a numeric cell,
     server and browser alike, expects a plain number there), send the
     original formatting as a same-shaped side channel the UI can use to
-    re-append '$'/'%' onto the DISPLAYED text without touching the value
-    driving Δ / Δ% or the "num" right-align styling."""
-    return [{"p": v.prefix, "s": v.suffix} if isinstance(v, FormattedNumber) and (v.prefix or v.suffix)
+    re-append '$'/'%'/parens onto the DISPLAYED text without touching the
+    value driving Δ / Δ% or the "num" right-align styling."""
+    return [{"p": v.prefix, "s": v.suffix, "n": v.paren_negative}
+            if isinstance(v, FormattedNumber) and (v.prefix or v.suffix or v.paren_negative)
             else None for v in row]
 
 
@@ -576,6 +675,15 @@ def _detail(t, n):
         "total_rows": t.get("total_rows") or [],
         "rows": t["rows"],
         "fmt": [_fmt_row(r) for r in t["rows"]],
+        # the PDF's own "Note" reference column (e.g. "19", "21") --
+        # display-only, one entry per row, never merged into "rows" itself
+        # so it can't skew value-column detection or footing (see
+        # extract_all_tables.row_note_ref / find_all_tables' note_ref_map).
+        # Unrelated to "notes"/"notes_i18n" above (the engine's own English
+        # warning text about the table) AND to t["note_col"] (an unrelated,
+        # pre-existing column-INDEX hint analyze() sets for its own use).
+        "note_refs": ([X.row_note_ref(t, r) for r in t["rows"]]
+                      if t.get("note_ref_map") else None),
     }
 
 
@@ -616,6 +724,22 @@ def compare(name_a, n_a, name_b, n_b):
             "b": {"file": name_b, "title": tb.get("title"), "years": tb.get("years")}}
 
 
+def _draw_candidate_box(im, page, bbox):
+    """Bake an indigo highlight rectangle for `bbox` ([x0,y0,x1,y1], PDF
+    points) into a rendered page image -- shared by page_png (a saved
+    table's own bbox) and page_raw_png (an ephemeral candidate's bbox, e.g.
+    from telecom_candidates) so there's exactly one drawing convention."""
+    if not (bbox and len(bbox) == 4 and bbox[2] > bbox[0] and bbox[3] > bbox[1]):
+        return
+    x0, y0, x1, y1 = bbox
+    try:
+        im.draw_rect((x0, y0, min(x1, page.width - .5),
+                      min(y1, page.height - .5)),
+                     stroke="#4f46e5", stroke_width=3, fill=None)
+    except Exception:
+        pass
+
+
 def page_png(name, n, scale):
     key = (name, n, round(scale, 2))
     with _lock:
@@ -626,15 +750,7 @@ def page_png(name, n, scale):
     with pdfplumber.open(path) as pdf:
         page = pdf.pages[t["page_label"] - 1]
         im = page.to_image(resolution=int(72 * scale))
-        bb = t.get("bbox")
-        if bb and len(bb) == 4 and bb[2] > bb[0] and bb[3] > bb[1]:
-            x0, y0, x1, y1 = bb
-            try:
-                im.draw_rect((x0, y0, min(x1, page.width - .5),
-                              min(y1, page.height - .5)),
-                             stroke="#4f46e5", stroke_width=3, fill=None)
-            except Exception:
-                pass
+        _draw_candidate_box(im, page, t.get("bbox"))
         buf = io.BytesIO()
         im.save(buf, format="PNG")
         data = buf.getvalue()
@@ -684,6 +800,44 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # ---- remote-access passcode gate (--allow-remote only; see _REMOTE_PASSCODE) ----
+    def _g_login(self, q):
+        err = "Wrong passcode." if q.get("err") else ""
+        page = (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            "<title>Tables -- sign in</title><style>"
+            "body{font:16px system-ui;background:#0b0f19;color:#e6e8ef;"
+            "display:flex;align-items:center;justify-content:center;height:100vh;margin:0}"
+            "form{background:#141a29;padding:28px;border-radius:12px;width:260px}"
+            "input{width:100%;padding:10px;margin:10px 0;border-radius:8px;border:1px solid #333;"
+            "background:#0b0f19;color:#e6e8ef;font-size:16px;box-sizing:border-box}"
+            "button{width:100%;padding:10px;border-radius:8px;border:0;background:#4f46e5;"
+            "color:#fff;font-size:16px;cursor:pointer}"
+            ".err{color:#f87171;margin:0 0 8px}"
+            "</style></head><body><form method='post' action='/login'>"
+            "<h2 style='margin-top:0'>Enter passcode</h2>"
+            + (f"<p class='err'>{err}</p>" if err else "")
+            + "<input name='passcode' type='password' autofocus autocomplete='off'>"
+            "<button type='submit'>Continue</button></form></body></html>")
+        return self._send(200, page, "text/html; charset=utf-8")
+
+    def _p_login(self, raw_body):
+        # form-encoded, not JSON -- the one POST route that must work BEFORE
+        # any session exists, so it also has to skip do_POST's usual
+        # json.loads(body) (see do_POST's early dispatch to this method)
+        from urllib.parse import parse_qs as _pqs
+        fields = _pqs(raw_body.decode("utf-8", "replace"))
+        given = (fields.get("passcode") or [""])[0]
+        if not (_REMOTE_PASSCODE and secrets.compare_digest(given, _REMOTE_PASSCODE)):
+            return self._send(302, "", extra={"Location": "/login?err=1"})
+        tok = secrets.token_urlsafe(32)
+        _AUTH_SESSIONS.add(tok)
+        return self._send(302, "", extra={
+            "Location": "/",
+            "Set-Cookie": f"{_SESSION_COOKIE}={tok}; Path=/; HttpOnly; SameSite=Lax",
+        })
+
     # ---- GET routes: each takes (self, q) where q = parse_qs(query string) ----
     def _g_root(self, q):
         return self._send(200, HTML.read_text(encoding="utf-8"), "text/html; charset=utf-8")
@@ -721,14 +875,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def _g_page_raw(self, q):
         scale = max(1.0, min(float(q.get("scale", ["2"])[0]), 4.5))
+        bbox_raw = q.get("bbox", [""])[0]
+        bbox = None
+        if bbox_raw:
+            try:
+                bbox = [float(v) for v in bbox_raw.split(",")]
+            except ValueError:
+                bbox = None
         return self._send(200, page_raw_png(q["file"][0], int(q["n"][0]), scale,
-                                            q.get("hl", [""])[0]), "image/png")
+                                            q.get("hl", [""])[0], bbox), "image/png")
 
     def _g_search(self, q):
         return self._send(200, {"hits": search_pdf(q["file"][0], q.get("q", [""])[0])})
 
     def _g_quickfind(self, q):
         return self._send(200, {"hits": quick_find_statements(q["file"][0])})
+
+    def _g_telecom_candidates(self, q):
+        return self._send(200, telecom_candidates(q["file"][0]))
 
     GET_ROUTES = {
         "/": _g_root, "/index.html": _g_root,
@@ -738,11 +902,15 @@ class Handler(BaseHTTPRequestHandler):
         "/api/page": _g_page, "/api/pagecount": _g_pagecount,
         "/api/page_raw": _g_page_raw, "/api/search": _g_search,
         "/api/quickfind": _g_quickfind,
+        "/api/telecom_candidates": _g_telecom_candidates,
+        "/login": _g_login,
     }
 
     def do_GET(self):
         _debug_state_line(self.path)
         u = urlparse(self.path)
+        if u.path != "/login" and not _is_authed(self):
+            return self._send(302, "", extra={"Location": "/login"})
         handler = self.GET_ROUTES.get(u.path)
         if handler is None:
             return self._send(404, {"error": "not found"})
@@ -782,7 +950,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _p_extract_region(self, payload):
         bbox = [float(v) for v in payload["bbox"]]
-        d = extract_region(payload["file"], int(payload["page"]), bbox, payload.get("title"))
+        d = extract_region(payload["file"], int(payload["page"]), bbox,
+                           payload.get("title"), grid=payload.get("grid"))
         if d is None:
             no_text = not region_has_text(payload["file"], int(payload["page"]), bbox)
             return self._send(422, {
@@ -790,6 +959,17 @@ class Handler(BaseHTTPRequestHandler):
                           "No table found in that box -- try drawing it tighter "
                           "around just the table's rows and columns."),
                 "no_text": no_text, "ocr_available": X.HAVE_OCR})
+        return self._send(200, d)
+
+    def _p_detect_grid(self, payload):
+        # Always 200 -- "nothing detected near this box" is the routine,
+        # expected outcome of an exploratory drag (a rough box over blank
+        # margin, or a page img2table can't parse), not a request error;
+        # see detect_grid's own docstring. Reserve non-2xx for genuine
+        # request problems (bad file/page/bbox), which the generic
+        # do_POST try/except below already covers.
+        bbox = [float(v) for v in payload["bbox"]]
+        d = detect_grid(payload["file"], int(payload["page"]), bbox)
         return self._send(200, d)
 
     def _p_extract_region_ocr(self, payload):
@@ -819,21 +999,38 @@ class Handler(BaseHTTPRequestHandler):
         "/api/upload": _p_upload, "/api/extract_region": _p_extract_region,
         "/api/extract_region_ocr": _p_extract_region_ocr,
         "/api/delete_manual": _p_delete_manual, "/api/undelete_manual": _p_undelete_manual,
+        "/api/detect_grid": _p_detect_grid,
     }
     # every one of these needs a real, already-uploaded file -- catch "no
     # file selected yet" with one clear message instead of a bare KeyError
     # leaking to the browser (reachable from the UI: every sidebar control
     # used to be clickable before a file was ever chosen)
     _NEEDS_FILE = {"/api/reanalyze", "/api/extract_region", "/api/extract_region_ocr",
-                  "/api/export", "/api/delete_manual", "/api/undelete_manual"}
+                  "/api/export", "/api/delete_manual", "/api/undelete_manual",
+                  "/api/detect_grid"}
 
     def do_POST(self):
         _debug_state_line(self.path)
         u = urlparse(self.path)
+        if u.path == "/login":
+            # the one POST that must work before any session exists, so it
+            # runs before both the origin check and the auth gate below (its
+            # own protection is the passcode comparison inside _p_login) --
+            # and it's form-encoded, not JSON, so it skips the usual
+            # json.loads(body) too.
+            length = int(self.headers.get("Content-Length", "0"))
+            return self._p_login(self.rfile.read(length) or b"")
+        if not _is_authed(self):
+            return self._send(302, "", extra={"Location": "/login"})
         # reject cross-origin POSTs -- this is an open localhost endpoint that
-        # reads/writes files; only our own page (or a no-Origin client) may post
+        # reads/writes files; only our own page (or a no-Origin client) may
+        # post -- UNLESS the request already proved itself via the passcode
+        # gate above (_is_authed already returned True, e.g. through a
+        # deliberately-opened remote-access tunnel), in which case the
+        # passcode already established that this is trusted.
         origin = self.headers.get("Origin")
-        if origin and urlparse(origin).hostname not in ("127.0.0.1", "localhost"):
+        if origin and urlparse(origin).hostname not in ("127.0.0.1", "localhost") \
+                and not _REMOTE_PASSCODE:
             return self._send(403, {"error": "cross-origin POST refused"})
         handler = self.POST_ROUTES.get(u.path)
         if handler is None:
@@ -894,7 +1091,15 @@ def _discover_files(pdf_args):
     return files
 
 
-def run(pdf_args, host="127.0.0.1", port=None, open_browser=True, debug=False):
+def run(pdf_args, host="127.0.0.1", port=None, open_browser=True, debug=False,
+        allow_remote=False):
+    global _REMOTE_PASSCODE
+    if allow_remote:
+        # short (6 chars) is fine here -- it's not the only protection, the
+        # tunnel URL itself is also an unguessable secret, this is layered
+        # on top for the case where the URL alone leaks (browser history,
+        # a referrer header, screen-sharing the address bar by accident)
+        _REMOTE_PASSCODE = secrets.token_urlsafe(6)
     handlers = [logging.StreamHandler()]
     if debug:
         # persists past the terminal scrolling away -- if something acts up
@@ -943,6 +1148,10 @@ def run(pdf_args, host="127.0.0.1", port=None, open_browser=True, debug=False):
         print(f"  {len(files)} PDF(s):  " + ",  ".join(f.name for f in files))
     else:
         print("  no PDFs given on the command line -- upload one from the page")
+    if _REMOTE_PASSCODE:
+        print(f"\n  REMOTE ACCESS ON -- passcode required for every request: {_REMOTE_PASSCODE}")
+        print("  (only share this passcode the same way you'd share the tunnel URL itself --")
+        print("   anyone who has both can use this exactly as you can, including extracting)")
     print("  (Ctrl-C to stop)\n")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
@@ -966,8 +1175,14 @@ def _cli(argv=None):
                     help="verbose logging (a per-request server-state line, "
                          "plus tablekit.extract's own debug output) to the "
                          "console AND debug.log next to this script")
+    ap.add_argument("--allow-remote", action="store_true",
+                    help="require a one-time passcode (printed at startup) before ANY "
+                         "request -- for deliberately exposing this server through a "
+                         "tunnel (e.g. a short remote demo). Off by default; local-only "
+                         "usage is completely unaffected either way.")
     args = ap.parse_args(argv)   # argv=None -> argparse's own sys.argv[1:] default
-    run(args.files, port=args.port, open_browser=not args.no_browser, debug=args.debug)
+    run(args.files, port=args.port, open_browser=not args.no_browser, debug=args.debug,
+        allow_remote=args.allow_remote)
 
 
 if __name__ == "__main__":

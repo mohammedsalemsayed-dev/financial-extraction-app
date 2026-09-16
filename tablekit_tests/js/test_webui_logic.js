@@ -65,6 +65,34 @@ test("fmt() leaves plain numbers alone and re-applies a prefix/suffix only for d
   assert.strictEqual(fmt(null), "");
 });
 
+test("fmt() shows a paren_negative value the way the source printed it, not with a minus sign", () => {
+  const { fmt } = loadSandbox();
+  // the source printed "(10,059,524)" -- parse_number stored -10059524 (a
+  // real negative, so every arithmetic check still works) plus n:true so
+  // the DISPLAY can restore the original notation
+  assert.strictEqual(fmt(-10059524, { p: "", s: "", n: true }), "(10,059,524)");
+  assert.strictEqual(fmt(-1234, { p: "AED", s: "", n: true }), "(AED 1,234)");
+  // a genuinely positive value with n:true (never actually produced by
+  // parse_number, but fmt() shouldn't wrap a positive number in parens
+  // regardless) must render exactly as a plain positive
+  assert.strictEqual(fmt(1234, { p: "", s: "", n: true }), "1,234");
+  // n absent/false -- unchanged, still the plain minus-sign style
+  assert.strictEqual(fmt(-1234, { p: "", s: "" }), "-1,234");
+});
+
+test("fmt() never thousands-groups a header cell -- a year, not a quantity", () => {
+  const { fmt } = loadSandbox();
+  // "2025" as a real figure in a data row still groups normally...
+  assert.strictEqual(fmt(2025), "2,025");
+  // ...but the exact same value in the header row must render as a plain
+  // year, not "2,025" -- found live: a column header showing "2,025"
+  // instead of "2025". No prefix/suffix/paren formatting applies to a
+  // header cell either, even if the side-channel carries one.
+  assert.strictEqual(fmt(2025, null, true), "2025");
+  assert.strictEqual(fmt(2025, { p: "AED", s: "" }, true), "2025");
+  assert.strictEqual(fmt(-2025, { n: true }, true), "-2025");
+});
+
 test("t() falls back EN -> key, and interpolates {placeholders}", () => {
   const sandbox = loadSandbox();
   const { t } = sandbox;
@@ -150,6 +178,171 @@ test("upload-filename sanitiser keeps Unicode letters, still strips path separat
   const sanitize = (s) => s.replace(/[^\p{L}\p{N} .()-]/gu, "_");
   assert.strictEqual(sanitize("تقرير 2024.pdf"), "تقرير 2024.pdf");
   assert.strictEqual(sanitize("a/b\\c:d*e?.pdf"), "a_b_c_d_e_.pdf");
+});
+
+// gridLinesInBufferSpace() runs INSIDE the vm sandbox, so the arrays/objects
+// it returns belong to that realm -- deepStrictEqual treats those as never
+// reference-equal to a plain host-side literal even when every field
+// matches (Node prints "same structure but are not reference-equal"), so
+// both tests below round-trip the result through JSON first to compare on
+// structure/values alone, the same way the result would cross a postMessage
+// or fetch boundary in the real app anyway.
+test("gridLinesInBufferSpace() converts a detected grid from PDF points into scaled buffer-pixel line segments", () => {
+  const { gridLinesInBufferSpace } = loadSandbox();
+  const grid = {
+    bbox: [100, 200, 400, 500],
+    rows: [[200, 230], [230, 260], [260, 500]],   // 3 rows sharing edges at 230/260
+    cols: [[100, 250], [250, 400]],                // 2 cols sharing an edge at 250
+  };
+  const result = JSON.parse(JSON.stringify(gridLinesInBufferSpace(grid, 2)));
+  assert.deepStrictEqual(result.bbox, [200, 400, 800, 1000]);
+  // 3 rows -> 4 DISTINCT y-boundaries (200,230,260,500), not 6 -- adjacent
+  // rows share an edge, and that edge must draw as ONE line, not two
+  // overlapping ones
+  assert.deepStrictEqual(result.hLines.map(l => l.y), [400, 460, 520, 1000]);
+  result.hLines.forEach(l => { assert.strictEqual(l.x0, 200); assert.strictEqual(l.x1, 800); });
+  // 2 cols -> 3 distinct x-boundaries (100,250,400), same dedup logic on the
+  // other axis
+  assert.deepStrictEqual(result.vLines.map(l => l.x), [200, 500, 800]);
+  result.vLines.forEach(l => { assert.strictEqual(l.y0, 400); assert.strictEqual(l.y1, 1000); });
+});
+
+test("gridLinesInBufferSpace() returns empty line lists for a null grid (nothing detected)", () => {
+  const { gridLinesInBufferSpace } = loadSandbox();
+  const result = JSON.parse(JSON.stringify(gridLinesInBufferSpace(null, 2)));
+  assert.deepStrictEqual(result, { bbox: null, hLines: [], vLines: [] });
+});
+
+// hitTestGridLine()/moveGridLine() also run INSIDE the vm sandbox (see the
+// gridLinesInBufferSpace comment above for why their return values need a
+// JSON round-trip before deepStrictEqual against a host-side literal).
+test("hitTestGridLine() finds the nearest row or column line within tolerance, null when nothing is close", () => {
+  const { hitTestGridLine } = loadSandbox();
+  const grid = {
+    bbox: [100, 200, 400, 500],
+    rows: [[200, 300], [300, 500]],   // row boundaries at y=200,300,500
+    cols: [[100, 250], [250, 400]],   // col boundaries at x=100,250,400
+  };
+  const hit = (...args) => JSON.parse(JSON.stringify(hitTestGridLine(...args)));
+  // dead center of the row boundary at y=300 (scale 1:1 for simplicity)
+  assert.deepStrictEqual(hit(grid, 1, 200, 300, 10), { axis: "row", pdfValue: 300 });
+  // just within tolerance of the column boundary at x=250
+  assert.deepStrictEqual(hit(grid, 1, 244, 350, 8), { axis: "col", pdfValue: 250 });
+  // far from every line -- no hit
+  assert.strictEqual(hit(grid, 1, 175, 350, 8), null);
+  // no grid at all -- no hit, never throws
+  assert.strictEqual(hit(null, 1, 200, 300, 10), null);
+  // outside the line's own span (row line spans x in [100,400]; this point's
+  // y is dead on a row boundary but its x is far outside the table's bbox)
+  assert.strictEqual(hit(grid, 1, 1000, 300, 10), null);
+});
+
+test("hitTestGridLine() breaks a near-corner tie in favor of the row line", () => {
+  const { hitTestGridLine } = loadSandbox();
+  const grid = { bbox: [0, 0, 100, 100], rows: [[0, 50], [50, 100]], cols: [[0, 50], [50, 100]] };
+  // (50,50) is exactly on both the row boundary (y=50) and the column
+  // boundary (x=50) -- the row hit must win the tie, not whichever
+  // happened to be pushed into the array first
+  const hit = JSON.parse(JSON.stringify(hitTestGridLine(grid, 1, 50, 50, 10)));
+  assert.deepStrictEqual(hit, { axis: "row", pdfValue: 50 });
+});
+
+test("moveGridLine() moves every band edge (and the bbox edge) sitting at the old boundary, leaves everything else untouched", () => {
+  const { moveGridLine } = loadSandbox();
+  const grid = {
+    bbox: [100, 200, 400, 500],
+    // row[0].bot and row[1].top both sit at the shared boundary y=300
+    rows: [[200, 300], [300, 500]],
+    cols: [[100, 250], [250, 400]],
+  };
+  const moved = JSON.parse(JSON.stringify(moveGridLine(grid, "row", 300, 320)));
+  assert.deepStrictEqual(moved.rows, [[200, 320], [320, 500]]);
+  assert.deepStrictEqual(moved.cols, [[100, 250], [250, 400]], "moving a row line must never touch the columns");
+  assert.deepStrictEqual(moved.bbox, [100, 200, 400, 500], "an interior boundary must never move the bbox");
+  // the original grid object must be untouched -- moveGridLine returns a
+  // new grid rather than mutating state.grid's working copy in place
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(grid.rows)), [[200, 300], [300, 500]]);
+});
+
+test("moveGridLine() moves the bbox edge too when the dragged boundary IS the outer edge", () => {
+  const { moveGridLine } = loadSandbox();
+  const grid = { bbox: [100, 200, 400, 500], rows: [[200, 350], [350, 500]], cols: [[100, 400]] };
+  // dragging the table's very first row line (== the bbox's own top edge)
+  const moved = JSON.parse(JSON.stringify(moveGridLine(grid, "row", 200, 180)));
+  assert.deepStrictEqual(moved.rows, [[180, 350], [350, 500]]);
+  assert.deepStrictEqual(moved.bbox, [100, 180, 400, 500]);
+});
+
+test("moveGridLine() on the column axis leaves rows untouched", () => {
+  const { moveGridLine } = loadSandbox();
+  const grid = { bbox: [100, 200, 400, 500], rows: [[200, 500]], cols: [[100, 250], [250, 400]] };
+  const moved = JSON.parse(JSON.stringify(moveGridLine(grid, "col", 250, 270)));
+  assert.deepStrictEqual(moved.cols, [[100, 270], [270, 400]]);
+  assert.deepStrictEqual(moved.rows, [[200, 500]]);
+  assert.deepStrictEqual(moved.bbox, [100, 200, 400, 500]);
+});
+
+test("insertGridLine() splits the band containing pdfValue into two", () => {
+  const { insertGridLine } = loadSandbox();
+  const grid = { bbox: [100, 200, 400, 500], rows: [[200, 500]], cols: [[100, 400]] };
+  const result = JSON.parse(JSON.stringify(insertGridLine(grid, "row", 350)));
+  assert.deepStrictEqual(result.rows, [[200, 350], [350, 500]]);
+  assert.deepStrictEqual(result.cols, [[100, 400]]);
+  assert.deepStrictEqual(result.bbox, [100, 200, 400, 500]);
+});
+
+test("insertGridLine() extends the grid with a new outer band when pdfValue falls outside every band", () => {
+  const { insertGridLine } = loadSandbox();
+  // a tight bbox, matching what a real detected/edited grid looks like --
+  // by0 sits exactly at the first row's own top edge
+  const grid = { bbox: [100, 250, 400, 500], rows: [[250, 500]], cols: [[100, 400]] };
+  // above the first row -- grows the table upward, not a split
+  const above = JSON.parse(JSON.stringify(insertGridLine(grid, "row", 220)));
+  assert.deepStrictEqual(above.rows, [[220, 250], [250, 500]]);
+  assert.deepStrictEqual(above.bbox, [100, 220, 400, 500]);
+  // below the last row -- grows the table downward
+  const below = JSON.parse(JSON.stringify(insertGridLine(grid, "row", 550)));
+  assert.deepStrictEqual(below.rows, [[250, 500], [500, 550]]);
+  assert.deepStrictEqual(below.bbox, [100, 250, 400, 550]);
+});
+
+test("insertGridLine() is a no-op when pdfValue already sits on an existing boundary", () => {
+  const { insertGridLine } = loadSandbox();
+  const grid = { bbox: [100, 200, 400, 500], rows: [[200, 350], [350, 500]], cols: [[100, 400]] };
+  const result = JSON.parse(JSON.stringify(insertGridLine(grid, "row", 350)));
+  assert.deepStrictEqual(result.rows, [[200, 350], [350, 500]]);
+});
+
+test("removeGridLine() merges the two bands sharing an interior boundary", () => {
+  const { removeGridLine } = loadSandbox();
+  const grid = { bbox: [100, 200, 400, 500], rows: [[200, 300], [300, 500]], cols: [[100, 400]] };
+  const result = JSON.parse(JSON.stringify(removeGridLine(grid, "row", 300)));
+  assert.deepStrictEqual(result.rows, [[200, 500]]);
+  assert.deepStrictEqual(result.bbox, [100, 200, 400, 500]);
+});
+
+test("removeGridLine() drops the outer band entirely when the removed boundary IS the bbox edge", () => {
+  const { removeGridLine } = loadSandbox();
+  const grid = { bbox: [100, 200, 400, 500], rows: [[200, 350], [350, 500]], cols: [[100, 400]] };
+  const result = JSON.parse(JSON.stringify(removeGridLine(grid, "row", 200)));
+  assert.deepStrictEqual(result.rows, [[350, 500]]);
+  assert.deepStrictEqual(result.bbox, [100, 350, 400, 500]);
+});
+
+test("removeGridLine() refuses to drop the last remaining row or column", () => {
+  const { removeGridLine } = loadSandbox();
+  const grid = { bbox: [100, 200, 400, 500], rows: [[200, 500]], cols: [[100, 400]] };
+  const result = JSON.parse(JSON.stringify(removeGridLine(grid, "row", 200)));
+  assert.deepStrictEqual(result.rows, [[200, 500]], "a table must keep at least one row");
+});
+
+test("insertGridLine() then removeGridLine() at the same spot round-trips back to the original grid", () => {
+  const { insertGridLine, removeGridLine } = loadSandbox();
+  const grid = { bbox: [100, 200, 400, 500], rows: [[200, 500]], cols: [[100, 250], [250, 400]] };
+  const split = insertGridLine(grid, "row", 350);
+  const restored = JSON.parse(JSON.stringify(removeGridLine(split, "row", 350)));
+  assert.deepStrictEqual(restored.rows, [[200, 500]]);
+  assert.deepStrictEqual(restored.bbox, [100, 200, 400, 500]);
 });
 
 // A recording fetch mock robust to both call shapes in this file: bare GETs

@@ -65,7 +65,7 @@ except Exception:
 try:
     from tablekit.img2table_backend import (
         img2table_page_tables, rows_under_heading, rows_in_box, HAVE_IMG2TABLE,
-        ocr_rows_in_box, HAVE_OCR)
+        ocr_rows_in_box, HAVE_OCR, grid_in_box)
 except Exception:
     HAVE_IMG2TABLE = False
     HAVE_OCR = False
@@ -84,6 +84,9 @@ except Exception:
         return None
 
     def rows_in_box(*a, **k):  # type: ignore[misc]
+        return None
+
+    def grid_in_box(*a, **k):  # type: ignore[misc]
         return None
 
 # ----------------------------------------------------------------- detection ---
@@ -201,8 +204,9 @@ def _recon_tables(page, pdf_path=None):
             heads.append({**ln, "text": txt})
         for ln in heads:
             raw = _te.reconstruct_page_statement(page, ln["top"], ln["x0"]) or []
+            note_col = {}
             try:                    # split "6 1,569,189" -> note "6" + 1569189, etc.
-                raw = _te._strip_note_refs(raw)
+                raw, note_col = _te._strip_note_refs(raw)
             except Exception:
                 pass
             pr = _clean(raw)
@@ -260,19 +264,28 @@ def _recon_tables(page, pdf_path=None):
                             # over a candidate that doesn't foot at all
                             if q2[0] == 2 and q2 > q1:
                                 best_rows, best_title = pr2, title2
-            out.append((bbox, best_rows, best_title))
+            # the note-ref map was built against `pr` (the regex
+            # reconstruction) by _strip_note_refs -- it doesn't apply if the
+            # img2table challenger (pr2, which never went through that step)
+            # won instead
+            out.append((bbox, best_rows, best_title,
+                        note_col if best_rows is pr else {}))
     except Exception:
         LOG.debug("reconstruction failed on p%s", getattr(page, 'page_number', '?'), exc_info=True)
     return out
 
 
 def find_all_tables(page, pdf_path=None):
-    """Every distinct table on the page, as (bbox, rows).  Runs pdfplumber's
-    strategies plus the geometry reconstruction, and drops near-duplicates
-    (ruled / reconstructed results outrank text-alignment guesses)."""
-    found = []  # (bbox, rows, rank, title_hint)  lower rank = more trustworthy
-    for bbox, rows, thint in _recon_tables(page, pdf_path):
-        found.append((tuple(bbox), rows, 0, thint))
+    """Every distinct table on the page, as (bbox, rows, title_hint, note_col).
+    Runs pdfplumber's strategies plus the geometry reconstruction, and drops
+    near-duplicates (ruled / reconstructed results outrank text-alignment
+    guesses). `note_col` is a display-only {normalized label: note ref}
+    map for a Notes-reference column _strip_note_refs pulled out of `rows`
+    to keep the arithmetic/value-column detection clean -- see
+    _finish_manual_table's callers for how it's re-attached for display."""
+    found = []  # (bbox, rows, rank, title_hint, note_col)  lower rank = more trustworthy
+    for bbox, rows, thint, note_col in _recon_tables(page, pdf_path):
+        found.append((tuple(bbox), rows, 0, thint, note_col))
     for rank, settings in enumerate((LINES, LINES_H, TEXT), start=1):
         try:
             tables = page.find_tables(table_settings=settings)
@@ -286,22 +299,22 @@ def find_all_tables(page, pdf_path=None):
             rows = _clean(rows)
             if not rows:
                 continue
-            found.append((tuple(t.bbox), rows, rank, None))
+            found.append((tuple(t.bbox), rows, rank, None, {}))
 
     found.sort(key=lambda f: (f[2], -(f[0][2] - f[0][0]) * (f[0][3] - f[0][1])))
     kept = []
-    for bbox, rows, rank, thint in found:
+    for bbox, rows, rank, thint, note_col in found:
         if any(_overlap(bbox, k[0]) > CONFIG["overlap_dedup"] for k in kept):
             continue
         # two heading anchors on a landscape 2-up page can reconstruct the same
         # rows from opposite sides -- drop the exact-content duplicate too
         if any(rows == k[1] for k in kept):
             continue
-        kept.append((bbox, rows, thint))
+        kept.append((bbox, rows, thint, note_col))
     # a single reconstruction that swallowed two stacked statements
     # (du's old landscape 2-up) -- cut it at the second statement heading
-    kept = [seg for (bbox, rows, thint) in kept
-            for seg in _split_stacked_statements(bbox, rows, thint)]
+    kept = [seg for (bbox, rows, thint, note_col) in kept
+            for seg in _split_stacked_statements(bbox, rows, thint, note_col)]
     kept.sort(key=lambda k: (round(k[0][1]), k[0][0]))   # top-to-bottom, left-to-right
     return kept
 
@@ -319,28 +332,59 @@ def _looks_labelless(rows):
 
 
 def _looks_garbled(rows):
-    """True when the pdfplumber-fallback path (bare `.extract_table()`, no
-    img2table region to anchor it -- see extract_region) has clearly merged
-    several real rows into one cell. Its default "lines" strategy only finds
-    a row boundary where there's an actual ruled line; a statement with
-    sparse ruling (a few subtotal rules, none between individual line items
-    -- common on real, non-ruled-grid statements) makes it treat everything
-    between two consecutive rules as ONE cell, joined by embedded newlines.
-    Found live (du annual 2011.pdf, a 2-up landscape spread: prose auditors'
-    report beside the actual statement -- img2table itself found nothing on
-    this specific page, so this fallback is what ran): cells like
+    """True when an extraction path has clearly merged several real rows
+    into one cell. Originally found on the pdfplumber-fallback path (bare
+    `.extract_table()`, no img2table region to anchor it -- see
+    extract_region): its default "lines" strategy only finds a row boundary
+    where there's an actual ruled line; a statement with sparse ruling (a few
+    subtotal rules, none between individual line items -- common on real,
+    non-ruled-grid statements) makes it treat everything between two
+    consecutive rules as ONE cell, joined by embedded newlines. Found live
+    (du annual 2011.pdf, a 2-up landscape spread: prose auditors' report
+    beside the actual statement -- img2table itself found nothing on this
+    specific page, so this fallback is what ran): cells like
     '6\\n7.1\\n7.2\\n7.3\\n7.4' and '6,903,496\\n371,667\\n88,003\\n164,282\\n549,050'
     -- five DIFFERENT line items' note-refs and figures, silently shown as
-    one row instead of five. A cell with an embedded newline is completely
-    normal on its own (a wrapped label); the tell is specifically MULTIPLE
-    of the newline-split pieces each independently looking like a number --
-    a wrapped label's continuation lines don't."""
+    one row instead of five.
+
+    img2table anchors every row to its own detected cell geometry and
+    normally can't do this -- but its row-boundary detection can still fail
+    outright on an unusual layout and produce the exact same shape (found
+    live: du annual 2025.pdf p131, a landscape page with two half-page
+    statements side by side -- img2table's one detected region spanned the
+    seam between them, with cells like
+    '10,288,767\\n1,515,395\\n869,600\\n...' collapsing ten different
+    balance-sheet line items into one), so extract_region checks this
+    against BOTH paths, not just the fallback.
+
+    A cell with an embedded newline is completely normal on its own (a
+    wrapped label); the tell is specifically MULTIPLE of the newline-split
+    pieces each independently looking like a number -- a wrapped label's
+    continuation lines don't.
+
+    That count alone isn't enough once img2table is in scope too, though:
+    a label that wraps AROUND its own note-ref and figures (rather than
+    before or after them) can legitimately glue a handful of number-shaped
+    pieces into one cell for a single real row -- found live on du annual
+    2020.pdf's own balance sheet, once still in scope for this same check,
+    ncols=4: 'Financial asset at fair value through other\\n11\\n18,368\\n
+    18,368\\ncomprehensive income' (one row's own note-ref and two years'
+    figures, 3 number-shaped pieces) tripped the bare ">=2" rule and threw
+    away the ENTIRE otherwise-correct statement. A single legitimate row
+    can never hold more numbers than the table has columns, but several
+    merged rows routinely do (5 numbers in a 3-column table for the
+    original du 2011 case above; 9 in a 2-column table for the du 2025 p131
+    case) -- so the count is compared against the table's own column count,
+    not a fixed constant."""
+    if not rows:
+        return False
+    ncols = max((len(r) for r in rows), default=0)
     for row in rows or []:
         for cell in row or []:
             if not isinstance(cell, str) or "\n" not in cell:
                 continue
             pieces = [p.strip() for p in cell.split("\n") if p.strip()]
-            if sum(1 for p in pieces if _NUM_RE.match(p)) >= 2:
+            if sum(1 for p in pieces if _NUM_RE.match(p)) > ncols:
                 return True
     return False
 
@@ -383,7 +427,17 @@ def _attach_left_labels(page, rows, row_bands, search_x0, region_x0):
     return out
 
 
-def _finish_manual_table(pdf_path, page_index0, rows, shown_bbox, title):
+def _doc_years_from_filename(pdf_path):
+    """Fiscal year guessed from the file name ('en-2020-...', 'du annual
+    2013.pdf') -- the most reliable period signal for a table that carries
+    no year header of its own (or, for a manually-boxed region, one whose
+    header row just wasn't included in the drawn box)."""
+    fn_yrs = [int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", Path(pdf_path).stem)
+              if 1990 <= int(y) <= 2035]
+    return [max(fn_yrs), max(fn_yrs) - 1] if fn_yrs else None
+
+
+def _finish_manual_table(pdf_path, page_index0, rows, shown_bbox, title, note_col=None):
     """Shared tail for extract_region / extract_region_ocr: same
     classify/analyze/health pipeline every automatically-detected table goes
     through, so foots verification, year detection and the editable-grid UI
@@ -393,7 +447,20 @@ def _finish_manual_table(pdf_path, page_index0, rows, shown_bbox, title):
         "title": title, "rows": rows, "bbox": list(shown_bbox),
         "shape": classify(rows), "_manual": True,
     }
-    analyze(t)
+    if note_col:
+        # NOTE: keyed "note_ref_map" (not "note_col") -- analyze() already
+        # owns a DIFFERENT "note_col" field (a column INDEX hint, set
+        # unconditionally by analyze()'s own t.update()), which would
+        # silently clobber this display-only {label: note ref} map if the
+        # two ever shared a key.
+        t["note_ref_map"] = note_col
+    # found live: a manually-drawn box that starts right at the first data
+    # row (a real, common choice -- the header sits just above where the
+    # user meant to click "start here") left `years` empty with no
+    # fallback at all, unlike the automatic scan() path -- which has
+    # always had this same filename-derived fallback (see
+    # _doc_years_from_filename) for exactly this situation.
+    analyze(t, doc_years=_doc_years_from_filename(pdf_path))
     _attach_health(t)
     return t
 
@@ -413,13 +480,149 @@ def box_has_text(pdf_path, page_index0, bbox):
         return bool((page.crop((cx0, cy0, cx1, cy1)).extract_text() or "").strip())
 
 
-def extract_region(pdf_path, page_index0, bbox, title=None):
+def detect_grid(pdf_path, page_index0, bbox):
+    """Detect-only counterpart to `extract_region`, for the grid-preview
+    feature: reports the row/column LINE positions img2table detects for
+    whatever table matches `bbox`, without running the rest of
+    extract_region's pipeline (label recovery, note-ref stripping, title
+    guessing, `_clean`/`analyze`/health) -- fast enough to fire on every
+    mouse-release during exploratory dragging, not just one deliberate
+    "Extract" click.
+
+    Deliberately does NOT fall back to the pdfplumber path extract_region
+    uses when img2table finds nothing (`page.crop(bbox).find_table()`) --
+    that fallback is secondary by design, and extending grid detection to
+    it isn't motivated by anything observed yet; a box that would only be
+    servable through that fallback simply gets no preview here, same as if
+    img2table isn't installed at all.
+
+    Returns {"available": True, "bbox": [...], "rows": [...], "cols": [...]}
+    or {"available": False} -- never raises for "nothing detected here",
+    since that's the routine, expected outcome of a rough exploratory drag,
+    not an error condition the caller needs to handle specially."""
+    if not HAVE_IMG2TABLE:
+        return {"available": False}
+    x0, y0, x1, y1 = bbox
+    page_tables = img2table_page_tables(pdf_path, page_index0)
+    hit = grid_in_box(page_tables, x0, y0, x1, y1)
+    if hit is None:
+        return {"available": False}
+    row_bands, col_bands, tight_bbox = hit
+    return {
+        "available": True,
+        "bbox": list(tight_bbox),
+        "rows": [list(band) for band in row_bands],
+        "cols": [list(band) for band in col_bands],
+    }
+
+
+# A note-reference column that img2table folds into an adjacent one (see
+# _strip_note_refs's own docstring) never gets the chance to on the grid
+# path -- it has its OWN col_band, so it reads back as an already-isolated
+# "6"/"7"/"16.2"/"6, 7"/"6(a)", never glued to anything. _strip_note_refs
+# only knows how to UN-glue text ("label 6" or "6 2,475,403" in one cell,
+# via _TRAIL_NOTE_RE/_LEAD_NOTE_RE) -- there's nothing glued here for it to
+# find, so it would otherwise pass straight through as an unwanted extra
+# "value" column (dragging health score down and tripping the "one year is
+# ~100x the other" suspect check). Same note-ref vocabulary as
+# _TRAIL_NOTE_RE (bare small ints, optional decimal sub-note, comma list,
+# trailing paren marker) so this recognizes exactly the shapes that
+# function already would if they'd arrived glued instead of separate.
+_BARE_NOTE_CELL_RE = re.compile(
+    r"^\d{1,2}(\.\d+)?(\s*,\s*\d{1,2}(\.\d+)?)*\s*(\([a-z0-9]{1,3}\)|\)[a-z0-9]{1,3}\()?$",
+    re.I)
+
+
+def _reglue_bare_note_column(raw):
+    """Find at most one column (never the label, never the last) whose
+    non-empty values are OVERWHELMINGLY bare note refs, and merge it onto
+    the PRECEDING cell -- the same shape img2table's own column-folding
+    already produces for this exact column on the other two extraction
+    paths, so the existing, well-tested _strip_note_refs handles it
+    identically either way. A strong majority rather than unanimity: this
+    runs on the UNFILTERED raw rows, still including the table's own
+    column-header row ("Assets" | "Notes" | "2020 AED 000" | ...) -- the
+    literal word "Notes" in that row's own note-column cell obviously
+    doesn't match the bare-ref pattern, and requiring every row to match
+    would let that one legitimate header row veto an otherwise-clear
+    notes column. A column with fewer than 2 non-empty values is left
+    alone regardless (too little evidence to call it notes at all)."""
+    if not raw or not raw[0] or len(raw[0]) < 3:
+        return raw
+    ncols = len(raw[0])
+    note_col_idx = None
+    for i in range(1, ncols - 1):
+        vals = [row[i] for row in raw if i < len(row) and row[i] and str(row[i]).strip()]
+        if len(vals) < 2:
+            continue
+        matches = sum(1 for v in vals if _BARE_NOTE_CELL_RE.match(str(v).strip()))
+        if matches >= 2 and matches / len(vals) >= 0.6:
+            note_col_idx = i
+            break
+    if note_col_idx is None:
+        return raw
+    out = []
+    for row in raw:
+        row = list(row)
+        if note_col_idx < len(row) and row[note_col_idx] and str(row[note_col_idx]).strip():
+            label = row[note_col_idx - 1]
+            note = str(row[note_col_idx]).strip()
+            row[note_col_idx - 1] = f"{label} {note}".strip() if label and str(label).strip() else note
+        del row[note_col_idx]
+        out.append(row)
+    return out
+
+
+def _extract_via_grid(page, grid):
+    """Build raw table rows directly from a FINALIZED grid (row/col bands in
+    PDF-point space, as sent by the frontend's state.grid -- already
+    detected via /api/detect_grid and possibly hand-edited: a line dragged,
+    or a whole new row/column line added or removed). The user has already
+    told us exactly where every boundary is, so this reads whatever words
+    fall inside each resulting cell rectangle directly, rather than
+    re-deriving structure from img2table or pdfplumber's own table finder --
+    the only thing still unknown is a cell's TEXT, not where the cell is.
+    Same "group by line, then sort left-to-right within each line" idiom as
+    _attach_left_labels/guess_title use, so a cell whose label wraps across
+    two lines reads in the right order instead of interleaved.
+    Returns raw rows (list of lists of strings), or None if the grid carries
+    no usable rows/columns.
+    """
+    row_bands = grid.get("rows") or []
+    col_bands = grid.get("cols") or []
+    if not row_bands or not col_bands:
+        return None
+    words = page.extract_words()
+    raw = []
+    for top, bot in row_bands:
+        lines: dict = {}
+        for w in words:
+            if top - 1 <= w["top"] <= bot + 1:
+                lines.setdefault(round(w["top"]), []).append(w)
+        row = []
+        for x0, x1 in col_bands:
+            cell_words = [w for lt in sorted(lines)
+                          for w in sorted(lines[lt], key=lambda w: w["x0"])
+                          if w["x0"] < x1 and w["x1"] > x0]
+            row.append(_txt(" ".join(w["text"] for w in cell_words)))
+        raw.append(row)
+    return _reglue_bare_note_column(raw)
+
+
+def extract_region(pdf_path, page_index0, bbox, title=None, grid=None):
     """Manual-selection counterpart to the automatic heading-based scan: the
     user has already drawn a box around the exact table they want, so there's
     no heading to find or disambiguate against -- just pull whatever's under
     the box and run it through the SAME classify/analyze/health pipeline
     every automatically-detected table goes through, so foots verification,
     year detection and the editable-grid UI all work identically either way.
+    `grid`, when given, is the frontend's state.grid -- a detected (and
+    possibly hand-edited) row/column layout for this exact box, from
+    /api/detect_grid -- and wins over BOTH img2table and the pdfplumber
+    fallback below: the user has already finalized exactly where every
+    boundary is, so there's nothing left to auto-detect, only cell text
+    left to read (see _extract_via_grid). Omitting it (the default)
+    reproduces today's auto-detected result exactly, unchanged.
     Returns a table dict, or None if nothing table-like was found in the box
     (the caller can then check `box_has_text` to decide whether to offer the
     OCR failsafe -- see `extract_region_ocr`).
@@ -428,26 +631,63 @@ def extract_region(pdf_path, page_index0, bbox, title=None):
     raw = None
     matched_bbox = None
     row_bands = None
-    if HAVE_IMG2TABLE:
+    if not grid and HAVE_IMG2TABLE:
         page_tables = img2table_page_tables(pdf_path, page_index0)
         hit = rows_in_box(page_tables, x0, y0, x1, y1)
         if hit:
             raw, matched_bbox, row_bands = hit
+            # img2table anchors every row to its own detected cell geometry,
+            # so it normally can't merge unrelated rows together the way the
+            # pdfplumber fallback below can -- but its row-boundary detection
+            # can still fail outright on an unusual page layout and fall back
+            # to lumping several real rows into one cell, newline-joined,
+            # exactly like the fallback path's own failure mode below. Found
+            # live: du annual 2025.pdf p131, a landscape "two half-page
+            # statements side by side" layout unique to that file -- img2table
+            # found one region spanning the seam between the two halves, with
+            # cells like "10,288,767\n1,515,395\n869,600\n..." (ten different
+            # balance-sheet line items collapsed into one). Clear it and fall
+            # through to the fallback path below, exactly as if img2table had
+            # found nothing here at all -- a clean refusal beats confidently
+            # showing ten line items' figures with no idea which is which.
+            if _looks_garbled(raw):
+                raw = matched_bbox = row_bands = None
     with pdfplumber.open(pdf_path) as pdf:
         page = pdf.pages[page_index0]
+        if grid and not raw:
+            raw = _extract_via_grid(page, grid)
+            if raw:
+                # the grid's own bbox (possibly grown/shrunk by an edit) is
+                # what was ACTUALLY read from, same role matched_bbox plays
+                # for the other two paths below
+                matched_bbox = list(grid.get("bbox") or bbox)
         if not raw:
+            # find_table()+.extract() rather than the extract_table()
+            # shortcut (which is implemented as exactly this pair, see
+            # pdfplumber's own Page.extract_table) -- the Table object
+            # ALSO exposes each row's own bbox, which is what lets the
+            # label-recovery below run for this path too. Found live: a
+            # legitimate, separate statement (en-2021-etisalat-group-
+            # annual-report.pdf p61's OCI statement, the right half of a
+            # 2-up landscape spread whose LEFT half is a normal P&L that
+            # img2table finds fine) that img2table's own table detection
+            # misses entirely -- every table that lands on this fallback
+            # path used to come back numbers-only, no labels at all, since
+            # row_bands/matched_bbox stayed None and _attach_left_labels
+            # below never even ran.
             try:
-                raw = page.crop((x0, y0, x1, y1)).extract_table()
+                tbl = page.crop((x0, y0, x1, y1)).find_table()
+                if tbl is not None:
+                    raw = tbl.extract()
+                    matched_bbox = tbl.bbox
+                    row_bands = [(r.bbox[1], r.bbox[3]) for r in tbl.rows]
             except Exception:
                 raw = None
             # Refuse a result this fallback path clearly botched (several
             # real rows merged into one cell -- see _looks_garbled) rather
-            # than hand it to the user silently wrong. This is the ONLY
-            # extraction path that can produce this failure mode: img2table
-            # anchors every row to its own detected cell geometry, so it has
-            # no equivalent way to merge unrelated rows together.
+            # than hand it to the user silently wrong.
             if raw and _looks_garbled(raw):
-                raw = None
+                raw = matched_bbox = row_bands = None
         if not raw:
             return None
         # a ruled box that wraps only the number columns -- with row labels
@@ -459,6 +699,21 @@ def extract_region(pdf_path, page_index0, bbox, title=None):
         # to the left of the matched region, for the text that belongs to it.
         if row_bands and matched_bbox and _looks_labelless(raw):
             raw = _attach_left_labels(page, raw, row_bands, x0, matched_bbox[0])
+        # a "Note" reference column (small ints like "19", "21") sometimes
+        # rides along glued onto the label or the first figure -- e.g.
+        # img2table's own column grouping can fold a narrow Notes column
+        # into its label neighbour ("General and administrative expenses
+        # 19"). Pull it out the same way _recon_tables does for the
+        # heading-based path, so the label/figures read clean; note_col is
+        # carried through as a display-only side channel (see
+        # row_note_ref) rather than re-inserted as a real column, so it
+        # can't skew value-column detection or footing.
+        note_col = {}
+        if HAVE_RECON:
+            try:
+                raw, note_col = _te._strip_note_refs(raw)
+            except Exception:
+                pass
         rows = _clean(raw)
         if not rows:
             return None
@@ -488,7 +743,7 @@ def extract_region(pdf_path, page_index0, bbox, title=None):
     # trusted directly. Only the pdfplumber fallback (no per-row geometry
     # available) falls back to the drawn box itself.
     shown_bbox = list(matched_bbox) if matched_bbox else [x0, y0, x1, y1]
-    return _finish_manual_table(pdf_path, page_index0, rows, shown_bbox, title)
+    return _finish_manual_table(pdf_path, page_index0, rows, shown_bbox, title, note_col)
 
 
 def extract_region_ocr(pdf_path, page_index0, bbox, title=None):
@@ -521,10 +776,11 @@ def extract_region_ocr(pdf_path, page_index0, bbox, title=None):
     return t
 
 
-def _split_stacked_statements(bbox, rows, thint):
+def _split_stacked_statements(bbox, rows, thint, note_col=None):
     """If `rows` contains a second statement starting partway down (a
     'Cash flows from operating activities' / 'statement of ...' row well below
     the top), split into two tables so each can be typed and footed alone."""
+    note_col = note_col or {}
     cut = None
     for i, r in enumerate(rows):
         if i < 5 or i > len(rows) - 4:
@@ -541,7 +797,7 @@ def _split_stacked_statements(bbox, rows, thint):
             cut = i
             break
     if cut is None:
-        return [(bbox, rows, thint)]
+        return [(bbox, rows, thint, note_col)]
     x0, y0, x1, y1 = bbox
     mid = y0 + (y1 - y0) * cut / max(len(rows), 1)
     top = [r for r in rows[:cut] if _row_label(r).strip()]
@@ -549,16 +805,60 @@ def _split_stacked_statements(bbox, rows, thint):
     out = []
     if len(top) >= 4:
         t_labs = " || ".join(_row_label(r).lower() for r in top)
-        out.append(((x0, y0, x1, mid), top, _title_from_content(t_labs) or thint))
+        out.append(((x0, y0, x1, mid), top, _title_from_content(t_labs) or thint, note_col))
     if len(bot) >= 4:
         b_labs = " || ".join(_row_label(r).lower() for r in bot)
-        out.append(((x0, mid, x1, y1), bot, _title_from_content(b_labs)))
-    return out or [(bbox, rows, thint)]
+        out.append(((x0, mid, x1, y1), bot, _title_from_content(b_labs), note_col))
+    return out or [(bbox, rows, thint, note_col)]
 
 
 # ------------------------------------------------------------------- cleanup ---
 # _txt / parse_number / _cell / _NUM_RE come from tablekit.parse (imported at
 # the top).  Referenced by those names throughout this file and the tests.
+
+
+_WRAP_CONT_RE = re.compile(r"^[a-z]")
+
+
+def _merge_wrapped_labels(rows):
+    """A label that wraps onto a second physical line comes back as two
+    separate rows (both img2table's own row detection and the regex
+    reconstruction split on physical line, not logical row) -- and English
+    wrap continuations essentially never start with a capital letter
+    ('Total net operating expenses before depreciation and' / 'amortization',
+    'Impairment ... (net' / 'of recoveries)'), so a row starting lowercase
+    right after a row with NO figures at all is reliably the tail end of
+    that row's label, not a new line item. Merge it back: its own text
+    joins onto the previous row's label, and its figures (the label-only
+    row above never has any) become the merged row's figures.
+
+    Found live -- and NOT just a cosmetic label glitch: 'Total net
+    operating expenses before depreciation and' / 'amortization' left the
+    real "Total ..." row with no values to check arithmetic against, so
+    the footing check silently fell back to summing every line item
+    across three unrelated sections (revenue, direct costs, opex) against
+    the next unrelated total instead of stopping at the right one."""
+    if not rows:
+        return rows
+    out = [list(rows[0])]
+    for r in rows[1:]:
+        r = list(r)
+        prev = out[-1]
+        lbl = r[0] if r and isinstance(r[0], str) else None
+        prev_lbl = prev[0] if prev and isinstance(prev[0], str) else None
+        prev_has_figures = any(isinstance(c, (int, float)) and not isinstance(c, bool)
+                                for c in prev)
+        if (lbl and prev_lbl and not prev_has_figures
+                and _WRAP_CONT_RE.match(lbl) and len(lbl.split()) <= 8):
+            prev[0] = f"{prev_lbl} {lbl}"
+            for i in range(1, max(len(prev), len(r))):
+                if i < len(r) and r[i] is not None:
+                    while len(prev) <= i:
+                        prev.append(None)
+                    prev[i] = r[i]
+        else:
+            out.append(r)
+    return out
 
 
 _GLUED_SECT_RE = re.compile(
@@ -658,6 +958,7 @@ def _clean(rows):
             if any(rows[r][c] is not None and str(rows[r][c]).strip() != ""
                    for r in range(len(rows)))]
     rows = [[r[c] for c in keep] for r in rows]
+    rows = _merge_wrapped_labels(rows)
     rows = _desect_labels(rows)
     rows = _deprose_labels(rows)
     return rows if (rows and rows[0]) else []
@@ -841,6 +1142,22 @@ def _row_nums(r):
     return [c for c in r if isinstance(c, (int, float)) and not isinstance(c, bool)]
 
 
+def row_note_ref(t, r):
+    """Display-only Notes-reference for one row of table `t`, or None. `t`
+    may carry a `note_ref_map` (see find_all_tables/_recon_tables) built by
+    telecom_extract._strip_note_refs, keyed by its own normalize()d label --
+    never part of `rows` itself so it can't skew value-column detection or
+    footing. NOT the same field as analyze()'s own "note_col" (a column
+    index hint) -- deliberately a different key so the two can't collide."""
+    note_col = t.get("note_ref_map")
+    if not note_col or not HAVE_RECON:
+        return None
+    lbl = _row_label(r)
+    if not lbl:
+        return None
+    return note_col.get(_te.normalize(lbl).lower())
+
+
 def _statement_kind(title, rows):
     t = (title or "").lower()
     labs = " || ".join(_row_label(r).lower() for r in rows)
@@ -910,7 +1227,13 @@ def analyze(t, page_years=None, doc_years=None):
     for i, r in enumerate(rows[:4]):
         joined = " ".join(str(c) for c in r if c is not None)
         nums = _row_nums(r)
-        big = [v for v in nums if abs(v) >= 100]
+        # a plausible year (2010, 2025, ...) never disqualifies a row from
+        # being the header just for being ">= 100" -- found live: "As at
+        # 31 December", 2010, 2009] (a real label PLUS the year columns,
+        # collapsed onto one row) was being read as a DATA row because its
+        # own year numbers happen to be >= 100, and the header's "2010"
+        # then got summed into the footing check as if it were a figure.
+        big = [v for v in nums if abs(v) >= 100 and not _PLAUS_YEAR(int(v))]
         # a row whose only figures are plausible years and that carries no
         # label is itself the year header (['', 2024, 2023])
         year_only = (nums and all(_PLAUS_YEAR(int(v)) for v in nums)
@@ -1001,6 +1324,7 @@ def analyze(t, page_years=None, doc_years=None):
             # cut at 'profit/net profit for the year' so EPS / 'attributable
             # to' lines below it don't become the reconcile target
             cut = len(data)
+            found_pl_line = False
             # 1. an explicit "profit/loss for the year" row -- possibly with a
             #    section header ("Other comprehensive ...", "attributable to:")
             #    welded onto it by the reconstruction
@@ -1011,6 +1335,7 @@ def analyze(t, page_years=None, doc_years=None):
                             r"|\s+from continuing operations)?\s*$",
                             _row_label(r), re.I):
                     cut = i + 1
+                    found_pl_line = True
             # 2. no such label (reconstruction lost it) -- stop just before the
             #    OCI / EPS tail instead
             if cut == len(data):
@@ -1020,6 +1345,7 @@ def analyze(t, page_years=None, doc_years=None):
                                  r"|earnings per share|^\s*basic\b.*diluted",
                                  _row_label(r), re.I):
                         cut = i
+                        found_pl_line = True
                         break
             # 3. trim a trailing per-share / EPS tail (values < 1000 thousand)
             while cut >= 3:
@@ -1030,9 +1356,50 @@ def analyze(t, page_years=None, doc_years=None):
                     cut -= 1
                 else:
                     break
+            # a box that never reaches the statement's own "profit for the
+            # year" / OCI tail (neither search above matched) MIGHT be a
+            # PARTIAL extraction -- e.g. only the left half of a 2-up
+            # landscape page, ending at a section subtotal like "Total net
+            # operating expenses before depreciation and amortization"
+            # that has nothing numerically to do with revenue or direct
+            # costs above it. Checking data[:cut] as one flat sequence in
+            # that case sums every earlier SIBLING section's leaves
+            # (already verified by their OWN "Total ..." rows) into a
+            # check that was only ever about the last section.
+            #
+            # But "no recognised ending" also just means ordinary
+            # terminology this file's search regexes don't happen to
+            # know (a "Net income" statement never matches "profit for
+            # the year", yet is a completely normal, complete, single-
+            # cascade P&L where every earlier hard-total -- "Gross
+            # profit" included -- MUST stay in the walk, carrying its
+            # running total into the next). There's no way to tell those
+            # two shapes apart from the label text alone, so don't guess:
+            # try the full data[:cut] walk first, exactly as before this
+            # existed, and only narrow to start right after the last
+            # earlier hard-total when the full walk demonstrably fails
+            # AND the narrower one demonstrably succeeds. A statement
+            # that already reconciled the old way is untouched.
+            start = 0
+            if not found_pl_line:
+                for i in range(cut - 2, -1, -1):
+                    if _HARD_TOTAL_RE.match(_row_label(data[i]) or ""):
+                        start = i + 1
+                        break
+            if start:
+                full_oks, narrow_oks = [], []
+                for c in valcols:
+                    full_seq = [(_row_label(r), r[c]) for r in data[:cut]
+                                if c < len(r) and isinstance(r[c], (int, float))]
+                    narrow_seq = [(_row_label(r), r[c]) for r in data[start:cut]
+                                  if c < len(r) and isinstance(r[c], (int, float))]
+                    full_oks.append(_reconciles(full_seq))
+                    narrow_oks.append(_reconciles(narrow_seq))
+                if any(o is True for o in full_oks) or not any(o is True for o in narrow_oks):
+                    start = 0     # the wider walk already works (or neither does) -- keep it
             oks = []
             for c in valcols:
-                seq = [(_row_label(r), r[c]) for r in data[:cut]
+                seq = [(_row_label(r), r[c]) for r in data[start:cut]
                        if c < len(r) and isinstance(r[c], (int, float))]
                 oks.append(_reconciles(seq))
             foots = any(o is True for o in oks) if any(o is not None for o in oks) else None
@@ -1117,7 +1484,7 @@ def analyze(t, page_years=None, doc_years=None):
             line = ""
             if kind in ("income statement", "note"):
                 seq = [(_row_label(r), r[c])
-                       for r in (data[:cut] if kind == "income statement" else data)
+                       for r in (data[start:cut] if kind == "income statement" else data)
                        if c < len(r) and isinstance(r[c], (int, float))]
                 ex = reconcile_explain(seq)
                 line = ex.get("worked", "")
@@ -1199,12 +1566,34 @@ _DOWNGRADE_ANCHORS = (
     "non-current assets", "current assets", "share capital",
     "cash flows from operating", "net cash", "cash and cash equivalents",
     "financing activities", "investing activities",
-    "balance at", "as at 1 january", "total comprehensive income")
+    "balance at", "as at 1 january", "total comprehensive income",
+    # US-GAAP phrasing for the same line items the IFRS terms above already
+    # cover -- a statement written in one vocabulary or the other should
+    # clear this anchor-count threshold equally. Found live: Microsoft's
+    # 10-K income statement only matched 2 of the (IFRS-only) anchors above
+    # ("revenue", "operating income"), well under the n_anchor < 3 bar, and
+    # got demoted from "income statement" to "table" purely for using
+    # different -- equally standard -- words for the same line items.
+    "net income", "cost of revenue", "gross profit", "gross margin",
+    "income before income taxes", "income before taxes",
+    "provision for income taxes", "stockholders' equity", "stockholders equity",
+    "total current assets", "total current liabilities")
 _HIGHLIGHTS_RE = re.compile(
     r"\bebitda\b|\bhighlights?\b|profit and loss summary"
     r"|balance sheet summary|cash flow summary", re.I)
 # a "... margin" METRIC row (short, ends in margin) -- not "Margin on guarantees"
 _MARGIN_ROW_RE = re.compile(r"^[\w /()-]{0,24}\bmargin\b\s*%?$", re.I)
+
+
+def _is_ratio_row(r):
+    """True when every figure in the row is percentage-sized (<=100 in
+    magnitude) -- an MD&A "Gross margin 45.2% 43.1%" highlights row, not a
+    real face-statement dollar line that just happens to be NAMED "...
+    margin" (Microsoft's income statement prints "Gross margin" as an
+    actual $-millions subtotal, not a ratio -- _MARGIN_ROW_RE matches the
+    label either way, so the magnitude is what tells them apart)."""
+    nums = _row_nums(r)
+    return bool(nums) and all(abs(v) <= 100 for v in nums)
 
 
 def _is_structural_non_statement(kind, data, valcols):
@@ -1251,9 +1640,13 @@ def _looks_like_not_a_statement(kind, data, valcols, years, totals):
 
     # EBITDA / "... margin" rows point at an MD&A highlights block -- but du
     # genuinely prints EBITDA on the face of its P&L, so this only counts when
-    # the figures also fail to reconcile (which is why it lives here, gated)
+    # the figures also fail to reconcile (which is why it lives here, gated).
+    # A "... margin" row only counts when its OWN figures are percentage-
+    # sized (see _is_ratio_row) -- Microsoft's face income statement prints
+    # "Gross margin" as a real $-millions subtotal, not an MD&A ratio, and
+    # the label alone can't tell those two apart.
     highlights = bool(_HIGHLIGHTS_RE.search(labs)) or \
-        any(_MARGIN_ROW_RE.match(_row_label(r)) for r in data)
+        any(_MARGIN_ROW_RE.match(_row_label(r)) and _is_ratio_row(r) for r in data)
 
     # >= 4 figure columns on an "income statement" -> segmental / multi-entity
     many_cols = kind == "income statement" and len(valcols) >= 4
@@ -1363,14 +1756,17 @@ def _col_header_label(rows, data_start, col):
     return label or None
 
 
+_BAL_ROW_RE = re.compile(
+    r"(as )?(at|balance).{0,4}(1 january|31 december|beginning|end)", re.I)
+
+
 def _equity_foots(data, col, tol=None):
     """for the TOTAL column of a changes-in-equity statement: last balance ==
     first balance + sum of the movement rows."""
     if tol is None:
         tol = CONFIG["tol_equity"]
     bal_rows = [i for i, r in enumerate(data)
-                if re.search(r"(as )?(at|balance).{0,4}(1 january|31 december|beginning|end)",
-                             _row_label(r), re.I)
+                if _BAL_ROW_RE.search(_row_label(r))
                 and col < len(r) and isinstance(r[col], (int, float))]
     if len(bal_rows) < 2:
         return None
@@ -1385,9 +1781,17 @@ def _equity_foots(data, col, tol=None):
     # _HARD_TOTAL_RE: that pattern also matches "Profit for the year", which
     # IS a real movement here (it's only a "total" in an income statement's
     # own reconciliation, not in an equity roll-forward).
+    #
+    # The other-balance-row exclusion reuses _BAL_ROW_RE (date-anchored)
+    # rather than a bare "at|balance" search -- found live: once a wrapped
+    # label is correctly rejoined (see _merge_wrapped_labels), an entirely
+    # ordinary movement like "...financial asset AT fair value..." or
+    # "...obligATions..." contains "at" as plain English, not a balance
+    # date, and an unanchored search wrongly excluded it, silently
+    # dropping a real figure from the sum.
     moves = [data[i][col] for i in range(a + 1, b)
              if col < len(data[i]) and isinstance(data[i][col], (int, float))
-             and not re.search(r"(as )?(at|balance)", _row_label(data[i]), re.I)
+             and not _BAL_ROW_RE.search(_row_label(data[i]))
              and not re.match(r"\s*total\b", _row_label(data[i]), re.I)]
     if len(moves) < 2:            # too thin to be a real check -> don't claim
         return None
@@ -1898,7 +2302,12 @@ def build_workbook(all_tables):
         ncols = max((len(r) for r in rows), default=1)
         vcols = t.get("value_cols") or []
         add_delta = len(vcols) >= 2
-        outw = ncols + (2 if add_delta else 0)
+        # a Notes-reference column _strip_note_refs pulled out of `rows` for
+        # display only (see row_note_ref) -- write it back as its own column
+        # right after the label, shifting every value column over by one
+        has_notes = bool(t.get("note_ref_map"))
+        note_off = 1 if has_notes else 0
+        outw = ncols + note_off + (2 if add_delta else 0)
 
         sn = short_sheet_name(t, n, used)
         ws = wb.create_sheet(title=sn)
@@ -1920,21 +2329,46 @@ def build_workbook(all_tables):
         r0 = 4
         hi = t.get("header_idx", 0)
         for i, row in enumerate(rows):
+            if has_notes:
+                # a header row's OWN label can coincidentally look up a
+                # real match in note_ref_map (e.g. a row literally reading
+                # "Notes" as a column heading, keyed under whatever label
+                # sits in column 0 on that same row) -- row_note_ref only
+                # means anything for a real data row, so the header
+                # (i == hi, matching webui.js's own rendering) gets the
+                # literal "Note" column label instead, and any OTHER
+                # header row above it stays blank.
+                note_val = "Note" if i == hi else (row_note_ref(t, row) if i > hi else None)
+                ncell = ws.cell(row=r0 + i, column=2, value=note_val)
+                if i <= hi:
+                    ncell.font = Font(bold=True); ncell.fill = HEAD_FILL
+                elif note_val is not None:
+                    ncell.alignment = Alignment(horizontal="right")
             for cx in range(ncols):
                 val = row[cx] if cx < len(row) else None
-                # a cell that carried a currency symbol / '%' the value
-                # itself can't keep (needed as a plain number for footing,
-                # Δ, health) -- write what was actually printed instead of
-                # the bare number, same principle as the browser's own
-                # "fmt" side-channel (see serve.py's _fmt_row).
-                cell_val = val.formatted() if isinstance(val, FormattedNumber) and (val.prefix or val.suffix) else val
-                cell = ws.cell(row=r0 + i, column=cx + 1, value=cell_val)
+                # a cell that carried a currency symbol / '%' / parentheses-
+                # as-negative the value itself can't keep (needed as a plain
+                # signed number for footing, Δ, health) -- write what was
+                # actually printed instead of the bare number, same
+                # principle as the browser's own "fmt" side-channel (see
+                # serve.py's _fmt_row).
+                needs_reformat = isinstance(val, FormattedNumber) and \
+                    (val.prefix or val.suffix or val.paren_negative)
+                cell_val = val.formatted() if needs_reformat else val
+                out_col = cx + 1 + (note_off if cx >= 1 else 0)
+                cell = ws.cell(row=r0 + i, column=out_col, value=cell_val)
                 if i <= hi:
                     cell.font = Font(bold=True); cell.fill = HEAD_FILL
                 elif (r0 + i - r0) and (hi + 1 + (i - hi - 1)) in ():
                     pass
                 if isinstance(cell_val, (int, float)):
-                    cell.number_format = "#,##0.00" if isinstance(cell_val, float) else "#,##0"
+                    # a header cell holds a YEAR ("2025"), not a quantity --
+                    # thousands-grouping it as "2,025" reads as wrong, not
+                    # as more readable, the way it would for a real figure
+                    if i <= hi:
+                        cell.number_format = "0"
+                    else:
+                        cell.number_format = "#,##0.00" if isinstance(cell_val, float) else "#,##0"
                     cell.alignment = Alignment(horizontal="right")
                 elif isinstance(val, FormattedNumber):
                     cell.alignment = Alignment(horizontal="right")
@@ -1942,16 +2376,16 @@ def build_workbook(all_tables):
                 a = row[vcols[0]] if vcols[0] < len(row) else None
                 b = row[vcols[1]] if vcols[1] < len(row) else None
                 if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-                    dcell = ws.cell(row=r0 + i, column=ncols + 1, value=a - b)
+                    dcell = ws.cell(row=r0 + i, column=ncols + note_off + 1, value=a - b)
                     dcell.number_format = "#,##0;(#,##0)"
                     dcell.alignment = Alignment(horizontal="right")
                     if b:
-                        pc = ws.cell(row=r0 + i, column=ncols + 2, value=round(100.0 * (a - b) / abs(b), 1))
+                        pc = ws.cell(row=r0 + i, column=ncols + note_off + 2, value=round(100.0 * (a - b) / abs(b), 1))
                         pc.number_format = '0.0"%"'
                         pc.alignment = Alignment(horizontal="right")
         if add_delta:
             for off, lab in ((1, "Δ (change)"), (2, "Δ %")):
-                hc = ws.cell(row=r0 + hi, column=ncols + off, value=lab)
+                hc = ws.cell(row=r0 + hi, column=ncols + note_off + off, value=lab)
                 hc.font = Font(bold=True); hc.fill = HEAD_FILL
         # mark total / subtotal rows bold
         for tr in t.get("total_rows", []):
@@ -2111,11 +2545,7 @@ def scan(pdfs, pr, min_rows, min_cols, warn=print, progress=None):
     early (cooperative cancel) -- whatever's been found so far is returned."""
     all_tables = []
     for pdf_path in pdfs:
-        # fiscal year from the file name ('en-2020-...', 'du annual 2013.pdf') --
-        # the most reliable period signal for tables that carry no year header
-        _fn_yrs = [int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", pdf_path.stem)
-                   if 1990 <= int(y) <= 2035]
-        doc_years = [max(_fn_yrs), max(_fn_yrs) - 1] if _fn_yrs else None
+        doc_years = _doc_years_from_filename(pdf_path)
         with pdfplumber.open(pdf_path) as pdf:
             if _looks_scanned(pdf):
                 warn(f"  !! {pdf_path.name}: little or no extractable text — this "
@@ -2137,7 +2567,7 @@ def scan(pdfs, pr, min_rows, min_cols, warn=print, progress=None):
                 pcnt = Counter(re.findall(r"\b(?:19|20)\d{2}\b", ptext))
                 page_years = [int(y) for y, _ in pcnt.most_common(3)
                               if 1990 <= int(y) <= 2035][:2]
-                for bbox, rows, thint in find_all_tables(page, pdf_path):
+                for bbox, rows, thint, note_col in find_all_tables(page, pdf_path):
                     if len(rows) < min_rows or max(len(r) for r in rows) < min_cols:
                         continue
                     rows = _trim_trailing_prose(rows)
@@ -2148,6 +2578,15 @@ def scan(pdfs, pr, min_rows, min_cols, warn=print, progress=None):
                         "bbox": [round(v, 1) for v in bbox],
                         "page_size": [round(page.width, 1), round(page.height, 1)],
                     }
+                    if note_col:
+                        # display-only Notes-reference column, keyed by
+                        # normalized row label -- kept OUT of "rows" itself so
+                        # it never pollutes value-column detection or footing
+                        # (see _recon_tables); the UI/Excel export re-attach
+                        # it purely for display via row_note_ref. Deliberately
+                        # NOT "note_col" -- analyze() already owns that key
+                        # (a column-index hint) and would clobber this map.
+                        t["note_ref_map"] = note_col
                     analyze(t, page_years=page_years, doc_years=doc_years)
                     _attach_health(t)
                     all_tables.append(t)

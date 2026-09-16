@@ -8,33 +8,46 @@ import re
 NUM_RE = re.compile(r"^\(?-?[\d,]+(?:\.\d+)?\)?%?$")
 _SUPERSCRIPT = re.compile(r"[⁰¹²³⁴-⁹]")
 _CURRENCY_RE = re.compile(r"^(aed|usd|eur|gbp|egp|sar|rs\.?|\$|£|€)\s*", re.I)
+_LEAD_REV_PAREN_RE = re.compile(r"^\)\s*\(\s*([\d,]+(?:\.\d+)?)\s*$")
 
 
 class FormattedNumber(float):
-    """A number whose source text carried a currency symbol and/or a
-    trailing '%' -- behaves as a plain float everywhere it matters
-    (isinstance checks, arithmetic, footing, health scoring, JSON encoding)
-    since it IS one, but remembers the original prefix/suffix so a caller
-    that wants to show the user what was actually printed (not just the
-    bare number every other numeric value collapses to) still can.
+    """A number whose source text carried a currency symbol, a trailing '%',
+    and/or parentheses-as-negative -- behaves as a plain float everywhere it
+    matters (isinstance checks, arithmetic, footing, health scoring, JSON
+    encoding) since it IS one, but remembers the original prefix/suffix/
+    paren-style so a caller that wants to show the user what was actually
+    printed (not just the bare number every other numeric value collapses
+    to) still can.
+
+    `paren_negative`: the source used "(1,234)", not "-1,234" -- accounting
+    notation for negative, not a different value. The tool still needs the
+    real signed number for every arithmetic check (footing, health, Δ), so
+    this only changes how a negative value is DISPLAYED back
+    (`.formatted()`), never what it IS.
 
     Deliberately NOT surfaced through the normal `str`/`repr` -- every
     existing call site that treats a cell as a number (sums, comparisons,
     JSON) must keep seeing exactly that, unaffected. Read `.prefix` /
-    `.suffix` explicitly where the formatting is wanted."""
-    def __new__(cls, value, prefix="", suffix=""):
+    `.suffix` / `.paren_negative` explicitly where the formatting is
+    wanted."""
+    def __new__(cls, value, prefix="", suffix="", paren_negative=False):
         obj = super().__new__(cls, value)
         obj.prefix = prefix
         obj.suffix = suffix
+        obj.paren_negative = paren_negative
         return obj
 
     def formatted(self):
         n = float(self)
+        neg = n < 0 and self.paren_negative
+        n = -n if neg else n
         s = f"{int(n):,}" if n.is_integer() else f"{n:,.10f}".rstrip("0").rstrip(".")
         # a currency CODE reads naturally with a space ("AED 1,234"); a
         # currency SYMBOL doesn't ("$1,234", not "$ 1,234")
         sep = " " if self.prefix.isalpha() else ""
-        return f"{self.prefix}{sep}{s}{self.suffix}"
+        body = f"{self.prefix}{sep}{s}{self.suffix}"
+        return f"({body})" if neg else body
 
 
 def normspace(s):
@@ -58,8 +71,10 @@ def parse_number(raw):
     if s.lower() in ("", "-", "–", "—", "--", "nil", "n/a", "na"):
         return None
     neg = False
+    paren_negative = False
     if s.startswith("(") and s.rstrip("*").rstrip().endswith(")"):
         neg = True
+        paren_negative = True
         s = s[s.index("(") + 1: s.rindex(")")]
     elif s.startswith(")") and s.rstrip("*").rstrip().endswith("("):
         # Some reports (Etisalat / e& especially, but also seen in du's own
@@ -73,7 +88,23 @@ def parse_number(raw):
         # handling to parse_number, which the manual/box-select path (and
         # everything else that calls coerce_cell) relies on instead.
         neg = True
+        paren_negative = True
         s = s[s.index(")") + 1: s.rindex("(")]
+    elif _LEAD_REV_PAREN_RE.match(s):
+        # A step further than the swap above: img2table's own cell-text
+        # assembly (not pdfplumber's -- the underlying PDF word order is
+        # verified correct, see below) can carry BOTH reversed parens all
+        # the way to the front instead of one on each side -- ")(417,358"
+        # for a source "(417,358)" -- found live on e&'s FY2022 cash flow
+        # statement (en-2022-1-eand-group-annual-report.pdf p50), where
+        # pdfplumber's own extract_words() reads the same words as the
+        # perfectly normal "(417,358)". Same bidi-reordering family as the
+        # swap above, just with the closing paren's reordering carrying it
+        # past the opening one; the digits/commas themselves stay in
+        # correct reading order.
+        neg = True
+        paren_negative = True
+        s = _LEAD_REV_PAREN_RE.match(s).group(1)
     m = re.search(r"\b(cr|dr)\b\.?$", s, re.I)               # credit / debit
     if m:
         neg = neg ^ (m.group(1).lower() == "cr")
@@ -81,6 +112,16 @@ def parse_number(raw):
     cur_m = _CURRENCY_RE.match(s)
     currency = cur_m.group(1) if cur_m else ""
     s = _CURRENCY_RE.sub("", s)
+    # US-GAAP-style statements often print the currency symbol only on a
+    # value block's first and total/last row, not every row -- text
+    # extraction can pick up the NEXT column's leading symbol and glue it
+    # onto the end of THIS cell instead of its own ("$ 72,732 $"; confirmed
+    # widespread on a real report -- 162 cells on one file alone). Strip a
+    # trailing symbol the same way as the leading one.
+    trail_m = re.search(r"\s*([$£€])\s*$", s)
+    if trail_m:
+        currency = currency or trail_m.group(1)
+        s = s[:trail_m.start()]
     # "AED 000" / "AED'000" / "USD 000" etc. is the standard "figures in
     # thousands" unit disclaimer printed once near a statement's header --
     # never a real data value -- so a bare "000" straight after a stripped
@@ -114,9 +155,30 @@ def parse_number(raw):
         grouped = re.fullmatch(r"\d{1,3}", tokens[0]) and \
             all(re.fullmatch(r"\d{3}", t) for t in tokens[1:-1]) and \
             re.fullmatch(r"\d{3}(?:\.\d+)?", tokens[-1])
+        # A number that's ALREADY comma-grouped can pick up a stray extra
+        # space (img2table's own cell-text assembly turning an internal
+        # newline into a space via normspace, not the source PDF) ANYWHERE
+        # inside it, not just right after one of its own commas -- confirmed
+        # live on two different splits, both on en-2021-etisalat-group-
+        # annual-report.pdf p61: "11, 180,517" (splits right after a comma)
+        # and "1,1\n12,374" for a source "1,112,374" (splits mid-group,
+        # after 4 characters with no comma adjacent at all -- pdfplumber's
+        # own extract_words() reads the same spot as the single, ordinary
+        # word "1,112,374"). Concatenating with no separator recovers the
+        # original figure whenever that concatenation is EXACTLY one
+        # strictly comma-grouped number -- which two genuinely distinct
+        # numbers glued into one cell can't produce by accident: every
+        # group after the first must start with a literal comma, so the
+        # match can only continue past the first token's own digits if the
+        # very next token happens to begin with a bare "," character, never
+        # true for a real second number. Never fires on real French/EU
+        # space-grouping either (that format never has commas inside its
+        # groups, so the whole-concatenation pattern can't match it).
+        if not grouped and re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?", "".join(tokens)):
+            grouped = True
         if not grouped and sum(1 for t in tokens if NUM_RE.match(t)) >= 2:
             return None
-    flat = s.replace(" ", "")
+    flat = re.sub(r"\s+", "", s)
     if re.fullmatch(r"[\d.]*,\d{1,2}", flat):                # European 1.234,56
         flat = flat.replace(".", "").replace(",", ".")
     elif "," in flat and "." in flat:                        # US 1,234.56
@@ -146,8 +208,9 @@ def parse_number(raw):
     except (OverflowError, ValueError):
         return None
     val = round(val, 4) if isinstance(val, float) else val
-    if currency or had_percent:
-        val = FormattedNumber(val, prefix=currency, suffix="%" if had_percent else "")
+    if currency or had_percent or paren_negative:
+        val = FormattedNumber(val, prefix=currency, suffix="%" if had_percent else "",
+                              paren_negative=paren_negative)
     return val
 
 
@@ -166,7 +229,10 @@ def coerce_cell(v):
         try:
             val = float(num)
             val = (-1 if neg else 1) * (int(val) if val.is_integer() else val)
-            return FormattedNumber(val, suffix="%") if had_percent else val
+            if had_percent or neg:
+                return FormattedNumber(val, suffix="%" if had_percent else "",
+                                       paren_negative=neg)
+            return val
         except ValueError:
             return s
     n = parse_number(s)
