@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "tablekit-serve",
-      "runtimeExecutable": "python",
-      "runtimeArgs": ["serve.py", "tablekit_tests/fixtures", "--port", "8765", "--no-browser"],
+      "runtimeExecutable": "C:\\Python314\\python.exe",
+      "runtimeArgs": ["serve.py", ".", "--port", "8765", "--no-browser"],
       "port": 8765
     }
   ]

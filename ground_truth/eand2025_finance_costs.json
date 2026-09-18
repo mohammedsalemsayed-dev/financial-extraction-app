@@ -1,0 +1,16 @@
+{
+  "source_pdf": "eand-integrated-annualreporten 2025.pdf",
+  "source_page": 202,
+  "title": "9. Finance and other costs",
+  "rows": [
+    ["AED '000", 2025, 2024],
+    ["Interest on short term bank borrowings, loans and other financial liabilities", 2735359, 2866036],
+    ["Interest on other borrowings", 971042, 601597],
+    ["Ineffectiveness on net investment hedge", 103593, -104149],
+    ["Foreign exchange (gain)/loss on borrowings - net", -1260687, 601617],
+    ["Fair value loss/(gain) on derivative financial instruments", 1038483, -457870],
+    ["Other costs", 1001984, 1665202],
+    ["Unwinding of discount", 34635, 39176],
+    ["Total", 4624409, 5211609]
+  ]
+}

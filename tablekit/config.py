@@ -14,6 +14,11 @@ CONFIG = {
     # ---- detection -------------------------------------------------------
     "two_up_page_width": 700,      # a page wider than this is a landscape 2-up spread
     "overlap_dedup": 0.55,         # two boxes overlapping more than this are the same table
+    "sliver_max_width": 100,       # a labelless candidate narrower than this (points) is a
+                                    # rule-intersection artifact, not a real table -- evictable
+                                    # by a better candidate over the same region (see
+                                    # find_all_tables); real, single-column-but-legitimate
+                                    # tables run wider than this in every real file seen so far
     "recon_head_max_start": 40,    # a statement heading must begin within N chars of line start
     "recon_head_max_len": 95,      # ...and the heading line be no longer than this
     "recon_min_anchor_words": 3,   # a reconstruction needs >= N known statement line-items

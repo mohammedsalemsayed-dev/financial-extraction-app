@@ -2483,6 +2483,89 @@
  },
  {
   "file": "du annual 2021.pdf",
+  "page": 89,
+  "kind": "statement of changes in equity",
+  "years": [
+   2021,
+   2020
+  ],
+  "foots": true,
+  "nrows": 20,
+  "ncols": 6,
+  "title": "Consolidated statement of changes in equity",
+  "series": [
+   [
+    "At 1 January 2020",
+    1764640
+   ],
+   [
+    "Profit for the year",
+    null
+   ],
+   [
+    "Other comprehensive",
+    null
+   ],
+   [
+    "(loss)/income",
+    -520.0
+   ],
+   [
+    "Total comprehensive income for the year",
+    -520.0
+   ],
+   [
+    "Transfer to statutory reserve",
+    144291
+   ],
+   [
+    "Final cash dividend paid",
+    null
+   ],
+   [
+    "Interim cash dividend paid",
+    null
+   ],
+   [
+    "At 31 December 2020",
+    1908411
+   ],
+   [
+    "At 1 January 2021",
+    1908411
+   ],
+   [
+    "Profit for the year",
+    null
+   ],
+   [
+    "Other comprehensive loss",
+    null
+   ],
+   [
+    "Total comprehensive income for the year",
+    null
+   ],
+   [
+    "Transfer to statutory reserve",
+    110074
+   ],
+   [
+    "Final cash dividend paid*",
+    null
+   ],
+   [
+    "Interim cash dividend paid**",
+    null
+   ],
+   [
+    "At 31 December 2021",
+    2018485
+   ]
+  ]
+ },
+ {
+  "file": "du annual 2021.pdf",
   "page": 90,
   "kind": "statement of cash flows",
   "years": [
@@ -3074,7 +3157,7 @@
    2024
   ],
   "foots": true,
-  "nrows": 28,
+  "nrows": 40,
   "ncols": 3,
   "title": "Statement of financial position",
   "series": [
@@ -3189,6 +3272,54 @@
    [
     "Total equity",
     10148291
+   ],
+   [
+    "Non-current liabilities Lease liabilities Contract liabilities Employees’ end of service benefits liabilities",
+    null
+   ],
+   [
+    "Other provisions",
+    231149
+   ],
+   [
+    "Total non-current liabilities",
+    2004738
+   ],
+   [
+    "Trade and other payables",
+    3711346
+   ],
+   [
+    "Federal royalty and income tax",
+    2283439
+   ],
+   [
+    "Lease liabilities",
+    592141
+   ],
+   [
+    "Contract liabilities",
+    629724
+   ],
+   [
+    "Due to related parties",
+    6030
+   ],
+   [
+    "Total current liabilities",
+    7222680
+   ],
+   [
+    "Total liabilities",
+    9227418
+   ],
+   [
+    "Total equity and liabilities",
+    19375709
+   ],
+   [
+    "*Refer to Note",
+    null
    ]
   ]
  },

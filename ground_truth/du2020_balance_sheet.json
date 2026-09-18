@@ -1,0 +1,222 @@
+{
+  "source_pdf": "du annual 2020.pdf",
+  "source_page": 70,
+  "title": "Statement of financial position",
+  "rows": [
+    [
+      "Assets Notes",
+      2020,
+      2019
+    ],
+    [
+      "Non-current assets",
+      null,
+      null
+    ],
+    [
+      "Property, plant and equipment",
+      8063422,
+      7741119
+    ],
+    [
+      "Right-of-use assets",
+      1851429,
+      1699651
+    ],
+    [
+      "Intangible assets and goodwill",
+      900215,
+      1051446
+    ],
+    [
+      "Lease receivable",
+      149963,
+      "-"
+    ],
+    [
+      "Investments accounted for using the equity method",
+      29835,
+      268948
+    ],
+    [
+      "Financial asset at fair value through other comprehensive income",
+      18368,
+      18368
+    ],
+    [
+      "Contract assets",
+      211216,
+      208994
+    ],
+    [
+      "Total non-current assets",
+      11224448,
+      10988526
+    ],
+    [
+      "Current assets",
+      null,
+      null
+    ],
+    [
+      "Inventories",
+      61513,
+      111795
+    ],
+    [
+      "Lease receivable",
+      18213,
+      "-"
+    ],
+    [
+      "Derivative financial instruments",
+      "-",
+      520
+    ],
+    [
+      "Contract assets",
+      454101,
+      473195
+    ],
+    [
+      "Trade and other receivables",
+      1726401,
+      1870556
+    ],
+    [
+      "Due from related parties",
+      139869,
+      164995
+    ],
+    [
+      "Term deposits",
+      2029327,
+      2948701
+    ],
+    [
+      "Cash and bank balances",
+      213375,
+      268695
+    ],
+    [
+      "Total current assets",
+      4642799,
+      5838457
+    ],
+    [
+      "Total assets",
+      15867247,
+      16826983
+    ],
+    [
+      "Equity and liabilities Notes",
+      2020,
+      2019
+    ],
+    [
+      "Equity",
+      null,
+      null
+    ],
+    [
+      "Share capital",
+      4532906,
+      4532906
+    ],
+    [
+      "Share premium",
+      232332,
+      232332
+    ],
+    [
+      "Other reserves",
+      1908411,
+      1764640
+    ],
+    [
+      "Retained earnings",
+      1895763,
+      2118877
+    ],
+    [
+      "Total equity",
+      8569412,
+      8648755
+    ],
+    [
+      "Non-current liabilities",
+      null,
+      null
+    ],
+    [
+      "Lease liabilities",
+      1691727,
+      1396800
+    ],
+    [
+      "Contract liabilities",
+      195149,
+      193095
+    ],
+    [
+      "Provision for employees\u2019 end of service benefits",
+      254037,
+      258740
+    ],
+    [
+      "Other provisions",
+      184581,
+      169832
+    ],
+    [
+      "Total non-current liabilities",
+      2325494,
+      2018467
+    ],
+    [
+      "Current liabilities",
+      null,
+      null
+    ],
+    [
+      "Trade and other payables",
+      3991797,
+      4600332
+    ],
+    [
+      "Lease liabilities",
+      616896,
+      460005
+    ],
+    [
+      "Contract liabilities",
+      358538,
+      377019
+    ],
+    [
+      "Due to related parties",
+      5110,
+      6073
+    ],
+    [
+      "Borrowings",
+      "-",
+      716332
+    ],
+    [
+      "Total current liabilities",
+      4972341,
+      6159761
+    ],
+    [
+      "Total liabilities",
+      7297835,
+      8178228
+    ],
+    [
+      "Total equity and liabilities",
+      15867247,
+      16826983
+    ]
+  ]
+}

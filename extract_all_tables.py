@@ -96,7 +96,7 @@ LINES_H = {"vertical_strategy": "text", "horizontal_strategy": "lines",
            "snap_tolerance": 4}
 TEXT = {"vertical_strategy": "text", "horizontal_strategy": "text",
         "min_words_vertical": 2, "min_words_horizontal": 1,
-        "snap_tolerance": 6, "keep_blank_chars": False}
+        "snap_tolerance": 6, "text_keep_blank_chars": False}
 
 
 def _overlap(a, b) -> float:
@@ -284,27 +284,261 @@ def find_all_tables(page, pdf_path=None):
     to keep the arithmetic/value-column detection clean -- see
     _finish_manual_table's callers for how it's re-attached for display."""
     found = []  # (bbox, rows, rank, title_hint, note_col)  lower rank = more trustworthy
-    for bbox, rows, thint, note_col in _recon_tables(page, pdf_path):
+    recon_results = _recon_tables(page, pdf_path)
+    for bbox, rows, thint, note_col in recon_results:
         found.append((tuple(bbox), rows, 0, thint, note_col))
+    # On a landscape 2-up page, two independent tables sit side by side --
+    # running a pdfplumber strategy on the WHOLE page interleaves their
+    # lines by y-position regardless of which column they're actually in
+    # (found live: eand-integrated-annualreporten 2025.pdf p202, two
+    # unrelated numbered notes side by side -- "2025 2024" header rows from
+    # the RIGHT note's table were read as if they belonged between the LEFT
+    # note's own rows, producing meaningless combined garbage that
+    # _looks_garbled's own newline-count check can't catch since the mangled
+    # cells are ordinary-looking single values, just from the wrong table).
+    # `_recon_tables` already confines its OWN reconstruction to one column
+    # per statement heading for exactly this reason; this generic path
+    # (used for every OTHER kind of table -- mainly numbered notes, which
+    # `_recon_tables` never touches, it only matches "Statement of ..."
+    # headings) gets the same treatment: try each strategy on the left-half
+    # and right-half crops FIRST (pdfplumber crops keep the original page's
+    # absolute coordinates, so a crop's own found bbox needs no translation
+    # back). A whole-page pass still runs too, at a deliberately WORSE
+    # effective rank, purely as a fallback for the rare genuinely full-width
+    # table on an otherwise 2-up page -- if a half-page crop found anything
+    # at the same nominal rank, its narrower, non-interleaved candidate
+    # already occupies the region first (sorted by rank then bbox area) and
+    # the whole-page duplicate is dropped by the ordinary overlap-dedup
+    # below.
+    mid = page.width / 2
+    two_up = page.width > CONFIG["two_up_page_width"]
+    variants = [(page.crop((0, 0, mid, page.height)), 0),
+                (page.crop((mid, 0, page.width, page.height)), 0),
+                (page, 0.5)] if two_up else [(page, 0)]
+    # img2table's own borderless-table geometry, as a challenger for a
+    # text-position strategy's candidate on THIS same bbox when that
+    # candidate looks unreliable -- see the challenger block below for why
+    # this needed generalizing beyond `_recon_tables`'s own statement-only
+    # use of it. Computed once per page and cheap on every call after the
+    # first: img2table_page_tables caches by (path, page_index0), and
+    # `_recon_tables` above has typically already populated that cache.
+    # Only attempt the challenger below when `_recon_tables` found NOTHING
+    # at all on this page -- i.e. never on a page hosting a primary
+    # statement heading, where it already exists specifically to handle
+    # exactly this shape (including combining a 2-up statement's two
+    # physical halves into one complete result -- see its own docstring).
+    # Found live: du annual 2025.pdf p131 -- recon already produces one
+    # complete, correct 28-row balance sheet there, but the challenger,
+    # working from a text-strategy candidate independently positioned on
+    # the page's RIGHT half, doesn't overlap that result's bbox enough to
+    # get caught by the ordinary dedup below (they occupy genuinely
+    # different physical regions of the SAME logical, already-fully-
+    # captured statement) -- so it survived as a second, worse, partial
+    # "statement of financial position". This generalization was motivated
+    # by pages recon never touches at all (ordinary notes/schedules, no
+    # "Statement of ..." heading) -- gating on that is what recon's own
+    # absence already means, not a new judgment call.
+    page_tables = (img2table_page_tables(pdf_path, page.page_number - 1)
+                   if HAVE_IMG2TABLE and pdf_path is not None and not recon_results else [])
     for rank, settings in enumerate((LINES, LINES_H, TEXT), start=1):
-        try:
-            tables = page.find_tables(table_settings=settings)
-        except Exception:
-            tables = []
-        for t in tables:
+        for pv, penalty in variants:
             try:
-                rows = t.extract()
+                tables = pv.find_tables(table_settings=settings)
             except Exception:
-                continue
-            rows = _clean(rows)
-            if not rows:
-                continue
-            found.append((tuple(t.bbox), rows, rank, None, {}))
+                tables = []
+            for t in tables:
+                try:
+                    rows = t.extract()
+                except Exception:
+                    continue
+                # A note-reference column ("Notes" -- small integers right
+                # after the label, before the real figures) is invisible to
+                # a text-position strategy's own column detection: it just
+                # sees another data column, so it never gets separated out
+                # the way `_recon_tables`'s regex path already does via this
+                # same helper. Left in, a whole-column note-ref column
+                # doesn't just look odd -- it can silently become the
+                # column later code PICKS as "the value column" once this
+                # candidate is stitched onto a continuation from another
+                # page (`_stitch_page_breaks`), showing note numbers (21,
+                # 22, 24...) as if they were real AED figures. Found live:
+                # du annual 2025.pdf p132, a balance sheet continuation --
+                # "Trade and other payables" showed its note ref (25)
+                # instead of its real value (3,711,346) for exactly this
+                # reason. Stripped here, on the SAME raw pre-_clean rows and
+                # via the SAME helper recon already trusts, before any of
+                # the unreliability checks below (which look at real
+                # column-count, not a just-removed Notes column).
+                try:
+                    rows, note_col = _te._strip_note_refs(rows)
+                except Exception:
+                    note_col = {}
+                # Same rule the manual box-select path already applies (see
+                # extract_region's own _looks_garbled check, called the same
+                # way -- on the raw pre-_clean extraction, since _clean's own
+                # normspace step flattens each cell's embedded newlines to
+                # plain spaces, which is exactly the tell _looks_garbled
+                # looks for): a candidate that merged several real rows into
+                # one newline-joined cell is confidently wrong, not just
+                # imperfect. Found live on du annual 2025.pdf p162 (four
+                # notes packed side by side): even once the labelless
+                # slivers below stop winning the dedup race, the LINES_H
+                # strategy's surviving "real" table still collapses each
+                # note's several wrapped physical lines (no ruled line
+                # between individual items, only around each note as a
+                # whole) into one row per note.
+                #
+                # A text-position strategy (LINES_H/TEXT, both
+                # vertical_strategy="text" -- never plain LINES, whose
+                # column detection comes from real ruled lines, not
+                # whitespace guessing) has a SECOND, more common failure
+                # mode that doesn't leave the newline evidence
+                # `_looks_garbled` looks for: it shreds a long, wrapped
+                # label into many single-word-fragment columns purely from
+                # natural gaps between words ("Net income from c" / "ontinui"
+                # / "ng" / "operations" as four separate cells), confirmed
+                # via the FinTabNet benchmark as the single biggest driver
+                # of low scores across dozens of real, unrelated 10-Ks
+                # (PNW, Schwab, MMC and more) -- every one an ordinary NOTE
+                # or schedule, never a primary statement, because those are
+                # the only tables `_recon_tables` above ever gives an
+                # img2table challenger to. No real financial table in this
+                # project's own golden corpus has ever needed more than 6
+                # columns; a raw (pre-_clean) candidate with far more than
+                # that is almost certainly this same over-segmentation, not
+                # a genuinely wide table.
+                is_unreliable = _looks_garbled(rows) or \
+                    (rank != 1 and rows and max(len(r) for r in rows) > 10)
+                if is_unreliable and page_tables:
+                    challenger = rows_in_box(page_tables, *t.bbox)
+                    if challenger:
+                        chal_raw, chal_bbox, _row_bands = challenger
+                        # Check the SAME garbled-evidence on the challenger's
+                        # own raw rows, before _clean() flattens it away --
+                        # missing this let a genuinely garbled img2table
+                        # region through on du annual 2025.pdf p131 (its
+                        # documented seam-crossing weak spot -- see
+                        # _looks_garbled's own docstring -- was reproducing
+                        # the exact problem a challenger exists to fix).
+                        if not _looks_garbled(chal_raw):
+                            # Same whole-column Notes-reference stripping as
+                            # the ordinary path above, and for the same
+                            # reason: img2table's own structure detection
+                            # has no more concept of "this column is note
+                            # numbers, not data" than pdfplumber's
+                            # text-position strategy does. Found live on the
+                            # SAME du annual 2025.pdf p132 case that
+                            # motivated the ordinary-path fix -- this exact
+                            # continuation table is what the challenger
+                            # picks up there, so leaving this path unstripped
+                            # would have shipped the identical wrong
+                            # "note-ref masquerading as a value" defect
+                            # through the other door.
+                            try:
+                                chal_raw, chal_note_col = _te._strip_note_refs(chal_raw)
+                            except Exception:
+                                chal_note_col = {}
+                            chal_rows = _clean(chal_raw)
+                            if chal_rows and not _looks_labelless(chal_rows) \
+                                    and max(len(r) for r in chal_rows) <= 10:
+                                found.append((tuple(chal_bbox), chal_rows, rank + penalty,
+                                              None, chal_note_col))
+                                continue
+                if is_unreliable:
+                    # No usable img2table challenger (unavailable, or its own
+                    # result was no better) -- same "clean refusal beats
+                    # confidently wrong data" rule this project already
+                    # applies everywhere else this shape of problem shows up.
+                    continue
+                rows = _clean(rows)
+                if not rows:
+                    continue
+                found.append((tuple(t.bbox), rows, rank + penalty, None, note_col))
 
     found.sort(key=lambda f: (f[2], -(f[0][2] - f[0][0]) * (f[0][3] - f[0][1])))
+    # On a two-up page, `_recon_tables` (rank 0) can produce ONE complete
+    # statement that already combines both physical halves (its own
+    # docstring: stitching a heading's two sides together) -- but its
+    # reported bbox still only reflects where the HEADING sat, nominally
+    # one side. A rank>=1 candidate independently found on the OTHER side
+    # can then land far enough away in X to dodge the ordinary bbox-overlap
+    # dedup below entirely, while its Y-range still substantially coincides
+    # with the statement recon already fully captured -- found live on du
+    # annual 2025.pdf p131: recon's 28-row balance sheet (bbox X:0-441)
+    # left a text-strategy candidate on the page's right half (X:426-794,
+    # Y-range 92% inside recon's own Y-range) undetected as a duplicate,
+    # surfacing as a second, worse "statement of financial position".
+    # Y-only overlap (ignoring X entirely) is what actually catches this --
+    # scoped to two-up pages specifically, where one statement legitimately
+    # spanning the full page width, under two different nominal bboxes, is
+    # the norm this whole geometry class exists to handle.
+    recon_bboxes = [f[0] for f in found if f[2] == 0] if two_up else []
+
+    def _y_overlap_frac(a, b):
+        top, bot = max(a[1], b[1]), min(a[3], b[3])
+        if bot <= top:
+            return 0.0
+        inter = bot - top
+        return inter / max(1.0, min(a[3] - a[1], b[3] - b[1]))
+
     kept = []
     for bbox, rows, rank, thint, note_col in found:
-        if any(_overlap(bbox, k[0]) > CONFIG["overlap_dedup"] for k in kept):
+        if rank > 0 and recon_bboxes and \
+                any(_y_overlap_frac(bbox, rb) > 0.7 for rb in recon_bboxes):
+            continue
+        overlap_i = next((i for i, k in enumerate(kept)
+                           if _overlap(bbox, k[0]) > CONFIG["overlap_dedup"]), None)
+        if overlap_i is not None:
+            # A ruled-line strategy can find a spurious "table" that's really
+            # just one bare numeric column bounded by unrelated rule
+            # intersections -- no label column at all, and narrow: nowhere
+            # near wide enough to hold a label column plus even one value
+            # column. Found live on du annual 2025.pdf p162 (four notes
+            # packed side by side in a 2-column x 2-row layout): the LINES
+            # strategy carved out six ~57pt-wide labelless numeric strips
+            # (each just one note's value column) instead of the actual
+            # notes, and being ruled-line results they sort/insert before
+            # the real, larger table another strategy finds under it -- so
+            # ordinary first-wins dedup let a sliver permanently block the
+            # real table for that region. Narrow fix: ONLY when the entry
+            # ALREADY in `kept` is both labelless AND this narrow does a
+            # later, non-labelless candidate covering the same region get to
+            # evict it -- everywhere else, first-wins is untouched.
+            #
+            # The width check specifically is load-bearing, not belt-and-
+            # braces: an earlier version of this fix keyed eviction on
+            # labelless-ness alone and passed every test until golden.json
+            # caught it -- on du annual 2024.pdf p93, a legitimately
+            # labelless but 212pt-wide LINES candidate was the thing
+            # correctly SUPPRESSING an unrelated, genuinely garbled
+            # "Statement of changes in equity" candidate (itself not
+            # labelless, so it survives this fix's other check) that no
+            # strategy manages to extract cleanly on that file. Dropping the
+            # width check let that garbled candidate evict the suppressor
+            # and get surfaced as a brand-new "detected" statement --
+            # confidently wrong data appearing where the tool previously,
+            # correctly, showed nothing. A plain narrow-sliver definition
+            # (bare rule-intersection artifact, not a real table shape at
+            # all) is what actually distinguishes the two cases; "labelless"
+            # alone does not.
+            kept_bbox, kept_rows = kept[overlap_i][0], kept[overlap_i][1]
+            kept_width = kept_bbox[2] - kept_bbox[0]
+            kept_is_sliver = _looks_labelless(kept_rows) and kept_width < CONFIG["sliver_max_width"]
+            # Row COUNT is not a safe quality signal here -- a real,
+            # correctly-labeled table can end up with FEWER physical rows
+            # than the sliver it's replacing (found live on
+            # eand-integrated-annualreporten 2025.pdf p202: LINES_H's real,
+            # 328pt-wide table glued several unruled physical lines into
+            # each of just 4 rows, while LINES's own 56.7pt-wide labelless
+            # sliver over the same region split those same lines into 11
+            # separate single-number rows -- more rows, zero labels). BBOX
+            # WIDTH is the reliable signal instead: a sliver is narrow
+            # specifically because it has no room for a label column, so a
+            # challenger meaningfully wider than the sliver it's replacing
+            # is real regardless of its row count.
+            if kept_is_sliver and not _looks_labelless(rows) \
+                    and (bbox[2] - bbox[0]) > kept_width * 3:
+                kept[overlap_i] = (bbox, rows, thint, note_col)
             continue
         # two heading anchors on a landscape 2-up page can reconstruct the same
         # rows from opposite sides -- drop the exact-content duplicate too
@@ -943,9 +1177,69 @@ def _deprose_labels(rows):
     return out
 
 
+_BARE_CURRENCY_RE = re.compile(r"^[$£€¥]$")
+
+
+def _merge_bare_currency_columns(rows):
+    """US-GAAP-style statements often print a value block's currency symbol
+    only on its first and total/last row, not every row (already handled
+    when the symbol is GLUED onto the adjacent figure in the SAME cell --
+    see parse_number's own docstring for that case). When it isn't glued, a
+    text-position table-finder (pdfplumber's own "text" vertical strategy)
+    can detect the symbol's consistent x-position as its OWN column,
+    separate from the figures -- found live on a FinTabNet benchmark case
+    (Cardinal Health 2018 10-K, revenue-by-geography note): every row came
+    back with a spurious extra column holding nothing but a lone '$' (or
+    blank on rows where the source didn't print one that row), immediately
+    before the real value column. Left in place, each such column reads as
+    a genuine extra data column during row alignment.
+
+    Runs on RAW, pre-coercion cell text (called before `_cell()` in
+    `_clean`, not after): a column where EVERY non-blank cell is a bare
+    currency glyph (never mixed with any other content) is glued onto the
+    very next column's own text -- "$" + "132,526" -> "$132,526" -- so the
+    output keeps exactly what the PDF printed, just consolidated into the
+    one cell it actually describes instead of a separate phantom column.
+    `_cell()`/`parse_number` already knows how to read a leading currency
+    symbol back off a cell exactly like this (the SAME glued-cell case
+    referenced above) and wraps the result in a `FormattedNumber` that
+    remembers the symbol for display while still behaving as a plain
+    number everywhere else (arithmetic, footing, comparisons) -- so nothing
+    downstream needs to change to support this."""
+    if not rows:
+        return rows
+    width = max(len(r) for r in rows)
+    rows = [list(r) + [None] * (width - len(r)) for r in rows]
+    is_symbol_col = []
+    for c in range(width):
+        non_blank = [r[c] for r in rows if r[c] is not None and str(r[c]).strip() != ""]
+        is_symbol_col.append(bool(non_blank)
+                              and all(_BARE_CURRENCY_RE.match(str(v).strip()) for v in non_blank))
+    if not any(is_symbol_col):
+        return rows
+    out = []
+    for r in rows:
+        new_r = []
+        i = 0
+        while i < width:
+            if is_symbol_col[i] and i + 1 < width:
+                sym = r[i]
+                nxt = r[i + 1]
+                sym_txt = str(sym).strip() if sym is not None else ""
+                nxt_txt = str(nxt).strip() if nxt is not None else ""
+                new_r.append(f"{sym_txt}{nxt_txt}" if sym_txt and nxt_txt else (nxt if nxt_txt else sym))
+                i += 2
+            else:
+                new_r.append(r[i])
+                i += 1
+        out.append(new_r)
+    return out
+
+
 def _clean(rows):
     if not rows:
         return []
+    rows = _merge_bare_currency_columns(rows)
     rows = [[_cell(c) for c in r] for r in rows]
     # drop fully-empty rows
     rows = [r for r in rows if any(c is not None and str(c).strip() != "" for c in r)]

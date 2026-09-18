@@ -1,0 +1,192 @@
+{
+  "source_pdf": "du annual 2020.pdf",
+  "source_page": 72,
+  "title": "Statement of cash flows",
+  "rows": [
+    [
+      "Profit for the year",
+      1442914,
+      1730954
+    ],
+    [
+      "Adjustments for:",
+      null,
+      null
+    ],
+    [
+      "Depreciation and impairment of property, plant and equipment",
+      1346997,
+      1387189
+    ],
+    [
+      "Depreciation of right-of-use assets",
+      362409,
+      319818
+    ],
+    [
+      "Amortisation and impairment of intangible assets",
+      181018,
+      226129
+    ],
+    [
+      "Loss on disposal of property, plant and equipment",
+      1032,
+      "-"
+    ],
+    [
+      "Provision for employees\u2019 end of service benefits",
+      32970,
+      35283
+    ],
+    [
+      "Loss allowance on contract assets",
+      9099,
+      2440
+    ],
+    [
+      "Loss allowance on trade receivables",
+      219996,
+      215414
+    ],
+    [
+      "Loss allowance on due from related parties",
+      25007,
+      "-"
+    ],
+    [
+      "Finance income",
+      -50575,
+      -124052
+    ],
+    [
+      "Finance costs",
+      105859,
+      124990
+    ],
+    [
+      "Impairment of goodwill",
+      135830,
+      "-"
+    ],
+    [
+      "Adjustment for change in discount/inflation rates",
+      1239,
+      259
+    ],
+    [
+      "Unwinding of discount on asset retirement obligations",
+      6953,
+      4806
+    ],
+    [
+      "Share of profit of investments accounted for using equity method",
+      -10099,
+      -10513
+    ],
+    [
+      "Gain on disposal of investment accounted for using equity method",
+      -519374,
+      "-"
+    ],
+    [
+      "Changes in working capital",
+      1430256,
+      1463163
+    ],
+    [
+      "Cash generated from operations",
+      4721531,
+      5375880
+    ],
+    [
+      "Royalty paid (net)",
+      -1950078,
+      -2069210
+    ],
+    [
+      "Payment of employees\u2019 end of service benefits",
+      -26312,
+      -34647
+    ],
+    [
+      "Net cash generated from operating activities",
+      2745141,
+      3272023
+    ],
+    [
+      "Purchase of property, plant and equipment",
+      -1834580,
+      -1186639
+    ],
+    [
+      "Purchase of intangible assets",
+      -174414,
+      -164640
+    ],
+    [
+      "Proceeds from disposal of property, plant and equipment",
+      126,
+      "-"
+    ],
+    [
+      "Payment for additional investments accounted for using equity method",
+      -31000,
+      -70256
+    ],
+    [
+      "Proceeds from disposal of investment accounted for using equity method",
+      800000,
+      "-"
+    ],
+    [
+      "Interest received",
+      116543,
+      157522
+    ],
+    [
+      "Margin on guarantees released",
+      1535,
+      1355
+    ],
+    [
+      "Term deposits released (net)",
+      919374,
+      1051299
+    ],
+    [
+      "Cash flows from financing activities",
+      null,
+      null
+    ],
+    [
+      "Repayment of lease liabilities",
+      -240917,
+      -128448
+    ],
+    [
+      "Repayment of borrowings",
+      -716332,
+      -1461318
+    ],
+    [
+      "Dividends paid",
+      -1541188,
+      -1586517
+    ],
+    [
+      "Interest paid on borrowings and lease liabilities",
+      -98073,
+      -116422
+    ],
+    [
+      "Net cash used in financing activities",
+      -2596510,
+      -3292705
+    ],
+    [
+      "Net decrease in cash and cash equivalents",
+      -53785,
+      -232041
+    ]
+  ]
+}

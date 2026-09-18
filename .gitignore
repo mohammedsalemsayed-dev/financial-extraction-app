@@ -47,3 +47,7 @@ package-lock.json
 # non-skipped extraction test instead of only PDF-gated tests that skip
 # cleanly with no PDFs present.
 !tablekit_tests/fixtures/*.pdf
+
+# FinTabNet.c benchmark dataset (downloaded, ~250MB+ of annotation JSON) and
+# its synthesized scratch PDFs -- never commit, just re-download/re-generate
+fintabnet/

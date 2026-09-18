@@ -21,7 +21,7 @@
     {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "Total current assets", "col": 0, "value": 5554152},
     {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "Total assets", "col": 0, "value": 19375709},
     {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "Total assets", "col": 1, "value": 18693292},
-    {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "Total equity", "col": 0, "value": 10148291},
+    {"file": "du annual 2025.pdf", "page": 131, "kind": "statement of financial position", "label": "^Total equity$", "col": 0, "value": 10148291},
 
     {"file": "en-2021-etisalat-group-annual-report.pdf", "page": 61, "kind": "income statement", "label": "^Revenue$", "col": 0, "value": 53342246},
     {"file": "en-2021-etisalat-group-annual-report.pdf", "page": 61, "kind": "income statement", "label": "^Revenue$", "col": 1, "value": 51708211},

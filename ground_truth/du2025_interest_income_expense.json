@@ -1,0 +1,16 @@
+{
+  "source_pdf": "du annual 2025.pdf",
+  "source_page": 162,
+  "title": "32 Interest income and expense",
+  "rows": [
+    ["AED '000", 2025, 2024],
+    ["Interest income - banks", 69684, 75243],
+    ["Interest income on lease receivable", 4020, 4687],
+    ["Interest income - others", 968, 2284],
+    ["Total interest income", 74672, 82214],
+    ["Interest expense on lease liabilities", 71094, 63671],
+    ["Interest expense - borrowing", 5899, 12898],
+    ["Interest expense - others", 18061, 13201],
+    ["Total interest expense", 95054, 89770]
+  ]
+}

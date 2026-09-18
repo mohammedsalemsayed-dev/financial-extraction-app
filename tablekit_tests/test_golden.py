@@ -2,7 +2,7 @@
 Regression tests for extract_all_tables.py
 
 `golden.json` is a snapshot of the detector's output on 14 real annual reports
-(42 primary statements).  Any code change that alters a detected statement's
+(43 primary statements).  Any code change that alters a detected statement's
 kind / years / foots verdict / shape / row values will fail here -- so the
 change has to be deliberate.  Regenerate the snapshot with:
 
