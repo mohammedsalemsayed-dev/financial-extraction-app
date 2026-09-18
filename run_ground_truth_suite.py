@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import extract_all_tables as X
+from tablekit.parse import normspace
 from tablekit.scorer import score_table
 
 ROOT = Path(__file__).resolve().parent
@@ -42,6 +43,24 @@ def best_matching_table(tables, gt_rows, gt_title=None):
             return title_hits[0]
         if len(title_hits) > 1:
             tables = title_hits
+    # Title guessing itself can miss (guess_title grabs nearby page text
+    # when the real heading isn't where it expects) -- found live on
+    # eti2019_impairment_note12.json: the correct table's own title came
+    # back as "consolidated statement of profit or loss" (bled in from a
+    # neighbouring page element), so the title-match above never fires and
+    # row-count alone ties a 6-row Goodwill fragment against this case's
+    # 6-row ground truth. Break that tie (and prefer over row-count
+    # generally) by how many of the ground truth's own row LABELS actually
+    # appear in a candidate -- content the title-guesser can garble but the
+    # table's own extracted labels usually still carry correctly.
+    gt_labels = {normspace(r[0]).lower() for r in gt_rows if r and r[0]}
+    if gt_labels:
+        def _label_hits(t):
+            cand_labels = {normspace(r[0]).lower() for r in t["rows"] if r and r[0]}
+            return len(gt_labels & cand_labels)
+        best = max(tables, key=_label_hits)
+        if _label_hits(best) > 0:
+            return best
     return min(tables, key=lambda t: abs(len(t["rows"]) - len(gt_rows)))
 
 

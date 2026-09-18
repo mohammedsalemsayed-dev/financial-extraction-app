@@ -439,8 +439,46 @@ def find_all_tables(page, pdf_path=None):
                             except Exception:
                                 chal_note_col = {}
                             chal_rows = _clean(chal_raw)
-                            if chal_rows and not _looks_labelless(chal_rows) \
-                                    and max(len(r) for r in chal_rows) <= 10:
+                            # No column-count cap here (unlike the >10
+                            # trigger for is_unreliable above): that trigger
+                            # exists to catch a text-position strategy's OWN
+                            # over-segmentation, but the whole point of the
+                            # challenger is to supply a genuinely better
+                            # reconstruction -- and a real table can
+                            # legitimately need far more than 10 columns
+                            # (found live: WRB's own actuarial loss-
+                            # development triangle, 13 real columns --
+                            # accident year, 10 years of data, IBNR,
+                            # cumulative claims). img2table's own structure
+                            # detection got this one exactly right; capping
+                            # the ACCEPTED result at 10 columns rejected a
+                            # clean, correct, wide table for no reason
+                            # related to its actual quality. _looks_garbled
+                            # and _looks_labelless are the real quality
+                            # signals; column count alone conflates
+                            # "genuinely wide" with "shredded," which the
+                            # >10 trigger already used to decide whether to
+                            # even ask for a second opinion in the first
+                            # place.
+                            # _looks_labelless only makes sense as a quality
+                            # gate on a NARROW result -- its whole premise
+                            # (no real text in column 0) is exactly what
+                            # marks a bare rule-intersection sliver as
+                            # fake. On a wide (>10 column) result it fires
+                            # on a genuinely valid table shape too: an
+                            # actuarial loss-development triangle's first
+                            # column is legitimately just accident years
+                            # (numbers), not descriptive text, yet the
+                            # table is completely real and informative --
+                            # confirmed live on the same WRB case above.
+                            # _looks_garbled already screens out the
+                            # shredded-nonsense case a wide result could
+                            # otherwise be; requiring a text label ON TOP
+                            # of that for a wide table rejects real data
+                            # for a reason that has nothing to do with
+                            # whether it's correct.
+                            chal_maxcols = max(len(r) for r in chal_rows) if chal_rows else 0
+                            if chal_rows and (chal_maxcols > 10 or not _looks_labelless(chal_rows)):
                                 found.append((tuple(chal_bbox), chal_rows, rank + penalty,
                                               None, chal_note_col))
                                 continue
@@ -538,6 +576,29 @@ def find_all_tables(page, pdf_path=None):
             # is real regardless of its row count.
             if kept_is_sliver and not _looks_labelless(rows) \
                     and (bbox[2] - bbox[0]) > kept_width * 3:
+                kept[overlap_i] = (bbox, rows, thint, note_col)
+                continue
+            # SEPARATE, narrower eviction case: a kept candidate holding
+            # only ONE row can never be a legitimate standalone table on
+            # its own merit (a real table needs at least a header plus one
+            # data row) -- it's a bare column-header line a ruled-line
+            # strategy carved out as its own "table" purely because a rule
+            # happens to run under it. Found live on etisalat-group-annual-
+            # report-english-2019.pdf p64: a LINES candidate holding just
+            # the year-header row ("2019 AED'000" / "2018 AED'000") sat
+            # exactly where Note 12's real Impairment table lives, wide
+            # enough (481.6pt) to dodge the sliver check above, and being
+            # rank 1 it got kept first -- blocking an img2table challenger
+            # that recovers the complete, correct 9-row note UNDER it, at a
+            # bbox that overlaps this 1-row fragment by 0.8. Width doesn't
+            # distinguish this case (both are wide); row count does -- a
+            # non-garbled, non-labelless challenger with more than one row
+            # is real regardless of how wide the fragment it's replacing is.
+            # (No separate _looks_garbled re-check needed here: everything
+            # reaching `found` already passed it, pre-_clean, before being
+            # inserted -- checking it again on these already-_clean()'d
+            # rows would only ever see flattened, newline-free text.)
+            elif len(kept_rows) <= 1 and not _looks_labelless(rows) and len(rows) > 1:
                 kept[overlap_i] = (bbox, rows, thint, note_col)
             continue
         # two heading anchors on a landscape 2-up page can reconstruct the same
