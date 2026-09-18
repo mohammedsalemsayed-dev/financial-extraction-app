@@ -406,9 +406,15 @@ def find_all_tables(page, pdf_path=None):
                 # project's own golden corpus has ever needed more than 6
                 # columns; a raw (pre-_clean) candidate with far more than
                 # that is almost certainly this same over-segmentation, not
-                # a genuinely wide table.
+                # a genuinely wide table. >=10, not >10: a Micron 10-K tax
+                # reconciliation table sat at EXACTLY 10 raw columns while
+                # visibly splitting numbers mid-digit ("(152)" as "(1" +
+                # "52)", a bare year "2007" as "200" + "7") -- confirmed via
+                # img2table producing a clean, exactly-matching result once
+                # actually asked for a second opinion, which the old
+                # strictly-greater-than boundary never did for this case.
                 is_unreliable = _looks_garbled(rows) or \
-                    (rank != 1 and rows and max(len(r) for r in rows) > 10)
+                    (rank != 1 and rows and max(len(r) for r in rows) >= 10)
                 if is_unreliable and page_tables:
                     challenger = rows_in_box(page_tables, *t.bbox)
                     if challenger:
@@ -680,6 +686,34 @@ def _looks_garbled(rows):
                 continue
             pieces = [p.strip() for p in cell.split("\n") if p.strip()]
             if sum(1 for p in pieces if _NUM_RE.match(p)) > ncols:
+                return True
+    # A different symptom of the same underlying problem (a column
+    # boundary landing where it shouldn't), not a merge this time but a
+    # SPLIT: a column boundary drawn through the middle of one real word,
+    # cropping it into two adjacent cells that individually look like
+    # numeric fragments. An unmatched leading "(" with no closing ")" in
+    # one cell, immediately followed by a cell that's the mirror image (a
+    # trailing ")" with no opening "("), is never real content on its own
+    # -- found live on a Micron 10-K tax reconciliation table: "(152)"
+    # came back as two cells, "(1" and "52)" (a bare year like "2007" split
+    # the same way, as "200" / "7", on the SAME table -- caught instead by
+    # the >=10 column-count trigger above, since this specific candidate
+    # happened to cross it too). Unlike the merge case above, this doesn't
+    # need a column-count comparison -- an unmatched paren fragment is
+    # unambiguous regardless of table shape. Known NOT covered by either
+    # fix: a currency symbol glued to just a number's leading 1-2 digits,
+    # with the rest as a separate fragment ("$ 2" / "09,147" for "$209,147"
+    # -- found on a Monster Beverage income-tax table, still low-scoring) --
+    # a real, distinct pattern, deliberately left for its own fix rather
+    # than a third bespoke heuristic bolted on here.
+    _OPEN_FRAG_RE = re.compile(r"^\(\s*-?[\d,]+$")
+    _CLOSE_FRAG_RE = re.compile(r"^[\d,]+\s*\)$")
+    for row in rows or []:
+        cells = [c for c in (row or [])]
+        for i in range(len(cells) - 1):
+            a, b = cells[i], cells[i + 1]
+            if isinstance(a, str) and isinstance(b, str) \
+                    and _OPEN_FRAG_RE.match(a.strip()) and _CLOSE_FRAG_RE.match(b.strip()):
                 return True
     return False
 
