@@ -414,7 +414,7 @@ def find_all_tables(page, pdf_path=None):
                 # actually asked for a second opinion, which the old
                 # strictly-greater-than boundary never did for this case.
                 is_unreliable = _looks_garbled(rows) or \
-                    (rank != 1 and rows and max(len(r) for r in rows) >= 10)
+                    (rank != 1 and rows and max(len(r) for r in rows) >= 8)
                 if is_unreliable and page_tables:
                     challenger = rows_in_box(page_tables, *t.bbox)
                     if challenger:
@@ -697,23 +697,43 @@ def _looks_garbled(rows):
     # -- found live on a Micron 10-K tax reconciliation table: "(152)"
     # came back as two cells, "(1" and "52)" (a bare year like "2007" split
     # the same way, as "200" / "7", on the SAME table -- caught instead by
-    # the >=10 column-count trigger above, since this specific candidate
+    # the column-count trigger above, since this specific candidate
     # happened to cross it too). Unlike the merge case above, this doesn't
     # need a column-count comparison -- an unmatched paren fragment is
-    # unambiguous regardless of table shape. Known NOT covered by either
-    # fix: a currency symbol glued to just a number's leading 1-2 digits,
-    # with the rest as a separate fragment ("$ 2" / "09,147" for "$209,147"
-    # -- found on a Monster Beverage income-tax table, still low-scoring) --
-    # a real, distinct pattern, deliberately left for its own fix rather
-    # than a third bespoke heuristic bolted on here.
+    # unambiguous regardless of table shape.
     _OPEN_FRAG_RE = re.compile(r"^\(\s*-?[\d,]+$")
     _CLOSE_FRAG_RE = re.compile(r"^[\d,]+\s*\)$")
+    # A THIRD variant, no parens involved at all: a plain positive number
+    # split mid-group. A correctly formatted thousands-grouped number's
+    # comma is ALWAYS followed by exactly 3 digits ("3,634") -- never 1 or
+    # 2 -- so a cell ending in a comma plus only 1-2 digits is identifiably
+    # an incomplete fragment, not a real, complete number, regardless of
+    # what the rest of the table looks like. Found live on a Micron 10-K
+    # debt-fair-value table: "3,634" came back as "3,63" and "4" in
+    # adjacent cells (same for "2,269" as "2,26" / "9") -- a column
+    # boundary landing one digit early, not caught by the >=10 trigger
+    # since this specific table only had 7 raw columns.
+    # Digits-after-comma + continuation length must sum to EXACTLY 3 --
+    # not just "short" -- deliberately, to stay unambiguous: a European-
+    # style decimal cell ("3,63" meaning 3.63) can otherwise look
+    # identical to a split thousands-group fragment. Real thousands
+    # grouping is always exactly 3 digits per group, so requiring the
+    # reassembled group to be exactly that width is what actually
+    # distinguishes "this was cut in half" from "this is a genuinely
+    # short adjacent decimal," not merely how short the fragment looks.
+    _TRAILING_FRAG_RE = re.compile(r"\d,(\d{1,2})$")
+    _CONTINUATION_RE = re.compile(r"^(\d{1,2})$")
     for row in rows or []:
         cells = [c for c in (row or [])]
         for i in range(len(cells) - 1):
             a, b = cells[i], cells[i + 1]
-            if isinstance(a, str) and isinstance(b, str) \
-                    and _OPEN_FRAG_RE.match(a.strip()) and _CLOSE_FRAG_RE.match(b.strip()):
+            if not (isinstance(a, str) and isinstance(b, str)):
+                continue
+            a, b = a.strip(), b.strip()
+            if _OPEN_FRAG_RE.match(a) and _CLOSE_FRAG_RE.match(b):
+                return True
+            m_a, m_b = _TRAILING_FRAG_RE.search(a), _CONTINUATION_RE.match(b)
+            if m_a and m_b and len(m_a.group(1)) + len(m_b.group(1)) == 3:
                 return True
     return False
 
@@ -1180,6 +1200,30 @@ def _merge_wrapped_labels(rows):
         if (lbl and prev_lbl and not prev_has_figures
                 and _WRAP_CONT_RE.match(lbl) and len(lbl.split()) <= 8):
             prev[0] = f"{prev_lbl} {lbl}"
+            for i in range(1, max(len(prev), len(r))):
+                if i < len(r) and r[i] is not None:
+                    while len(prev) <= i:
+                        prev.append(None)
+                    prev[i] = r[i]
+        elif (prev_lbl and not prev_has_figures and lbl is None
+                and (not r or r[0] is None or not str(r[0]).strip())
+                and any(isinstance(c, (int, float)) and not isinstance(c, bool) for c in r)):
+            # The other half of the same underlying problem, mirrored: a
+            # 2-physical-line label became its own row-with-no-figures, but
+            # the NEXT row starts with no label text at ALL (not even a
+            # lowercase continuation word) -- because the figures sit on
+            # a THIRD physical line, past where the label's own wrapped
+            # text ended, so row-detection drew the boundary between
+            # "all the label" and "just the figures" instead of catching
+            # a continuation word to key off. Found live on a FinTabNet
+            # benchmark case (KLAC equity-compensation-plan table): "Equity
+            # Compensation Plans Not Approved by Stockholders" (label only)
+            # immediately followed by [None, 5931209, None, 38.96, None]
+            # (figures only, blank label) -- scored as two broken rows
+            # instead of one correct one even though every individual
+            # figure was already right. Unlike the branch above, there's no
+            # continuation text to append to the label -- only the figures
+            # move.
             for i in range(1, max(len(prev), len(r))):
                 if i < len(r) and r[i] is not None:
                     while len(prev) <= i:
