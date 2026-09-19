@@ -413,8 +413,31 @@ def find_all_tables(page, pdf_path=None):
                 # img2table producing a clean, exactly-matching result once
                 # actually asked for a second opinion, which the old
                 # strictly-greater-than boundary never did for this case.
+                # A different failure mode from over-segmentation: the
+                # candidate's own Y-extent stops too early, before the
+                # actual data row(s) -- headers/labels only, not a single
+                # real figure anywhere. Found live on a J.P. Morgan 10-K
+                # pension table: the TEXT strategy's bbox captured only
+                # the two header rows ("U.S. Pension Plans" / "2013 2012"),
+                # missing the one real data row entirely -- img2table's own
+                # region for the SAME area extends further and has it.
+                # SCOPED TO SHORT candidates (<=5 rows) specifically -- an
+                # earlier version fired on any figure-less candidate
+                # regardless of length and measurably hurt overall FinTabNet
+                # accuracy (0.792 -> 0.780 on one sample) instead of helping:
+                # a genuinely all-text table (an exhibit index, dozens of
+                # rows, no numbers by its very nature) tripped it on EVERY
+                # row, and when no challenger saved it, got discarded
+                # outright where it used to be harmlessly kept as-is. A
+                # short, truncated-looking candidate is a much safer signal
+                # that something is actually MISSING, not just that the
+                # content is naturally non-numeric.
+                _has_any_figure = any(
+                    isinstance(c, str) and parse_number(c) is not None
+                    for r in (rows or []) for c in (r or []) if c)
                 is_unreliable = _looks_garbled(rows) or \
-                    (rank != 1 and rows and max(len(r) for r in rows) >= 8)
+                    (rank != 1 and rows and max(len(r) for r in rows) >= 8) or \
+                    (rows and len(rows) <= 5 and not _has_any_figure)
                 if is_unreliable and page_tables:
                     challenger = rows_in_box(page_tables, *t.bbox)
                     if challenger:
@@ -624,12 +647,46 @@ def _looks_labelless(rows):
     """Mirrors img2table_backend._has_label_column's own threshold: true
     when column 0 is NOT carrying real label text on a healthy fraction of
     rows -- i.e. this "table" is just bare figures with nothing saying what
-    they are."""
+    they are.
+
+    The population this is measured against is rows that actually CARRY A
+    FIGURE, not every row -- a genuine header row (e.g. `[None, "2013",
+    "2012"]`, exactly the shape a real ground-truth table's own header row
+    takes) has nothing wrong with its blank leading cell; it isn't a data
+    row that needs a label at all. Counting it against the ratio anyway
+    breaks on small tables specifically: found live on a J.P. Morgan 10-K
+    pension table, 2 real rows (1 header, 1 data) -- the old len(rows)
+    denominator demanded BOTH have label text before trusting a real
+    img2table challenger, when only the DATA row's label (present and
+    correct) actually mattered."""
     if not rows:
         return True
-    hits = sum(1 for r in rows if r and isinstance(r[0], str)
+    # "Carries a figure" is deliberately broader than "parse_number
+    # recognizes it": a real, correctly-labeled table's values aren't
+    # always bare numbers -- found live on an Edison International 10-K
+    # useful-lives disclosure, "25 years to 70 years" -- a real value, but
+    # never something parse_number will accept as ONE number. Requiring
+    # that made data_rows come back EMPTY for a table that was actually
+    # fine, so this fell through to the "not data_rows: return True"
+    # fallback regardless of how good the real labels were. What actually
+    # distinguishes a data row from a pure header/spacer is simpler: does
+    # it carry ANY real content outside column 0 at all.
+    data_rows = [r for r in rows if r and len(r) > 1
+                 and any(c is not None and str(c).strip() for c in r[1:])]
+    if not data_rows:
+        return True
+    hits = sum(1 for r in data_rows if r and isinstance(r[0], str)
               and re.search(r"[A-Za-z]{3,}", r[0]))
-    return hits < max(2, 0.3 * len(rows))
+    # Floor of 1, not 2: the same J.P. Morgan case has exactly ONE data
+    # row, correctly labeled -- a floor of 2 demands a SECOND labeled row
+    # that can't exist no matter how correct the table is. 2 remains the
+    # right floor once there's enough data rows for the 0.3 fraction to
+    # mean anything (protects a large table where only 2-3 rows out of
+    # many happen to carry real text against a coincidental pass); for 1-3
+    # data rows specifically, 30% rounds to under 1 anyway, so this only
+    # changes behavior exactly where the old floor was too strict to begin
+    # with.
+    return hits < max(1, 0.3 * len(data_rows))
 
 
 def _looks_garbled(rows):
