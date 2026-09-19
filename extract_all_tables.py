@@ -448,6 +448,12 @@ def find_all_tables(page, pdf_path=None):
                 is_unreliable = _looks_garbled(rows) or \
                     (rank != 1 and rows and max(len(r) for r in rows) >= 7) or \
                     (rows and len(rows) <= 5 and not _has_any_figure)
+                # Whether the ORIGINAL is trustworthy enough on its OWN row
+                # count to require the challenger not to collapse it: only
+                # meaningful when the original wasn't already flagged
+                # garbled (a genuinely garbled original has no row count
+                # worth protecting).
+                _orig_not_garbled_rowcount = None if _looks_garbled(rows) else len(rows or [])
                 if is_unreliable and page_tables:
                     challenger = rows_in_box(page_tables, *t.bbox)
                     if challenger:
@@ -459,7 +465,30 @@ def find_all_tables(page, pdf_path=None):
                         # documented seam-crossing weak spot -- see
                         # _looks_garbled's own docstring -- was reproducing
                         # the exact problem a challenger exists to fix).
-                        if not _looks_garbled(chal_raw):
+                        #
+                        # A SECOND way a challenger can be worse without
+                        # tripping _looks_garbled's own newline-count check:
+                        # gluing several real rows together with plain
+                        # SPACES, not newlines, when its row-boundary
+                        # detection collapses distinct lines img2table
+                        # itself never ruled between. Found live on a
+                        # Xilinx 10-K allowance-rollforward table: the
+                        # ORIGINAL (merely column-over-segmented, needing
+                        # label-fragment merging, not garbled at all) had
+                        # 10 real rows; the challenger collapsed three
+                        # rows' worth of section headers and two line
+                        # items into ONE row each, three total -- a much
+                        # worse result the column-count trigger alone
+                        # can't see, but a drastic row-count COLLAPSE
+                        # relative to an already-trustworthy original can.
+                        # Only applies when the original wasn't itself
+                        # garbled -- a genuinely garbled original has
+                        # nothing worth protecting its row count against.
+                        _chal_collapsed_rows = (
+                            _orig_not_garbled_rowcount is not None
+                            and _orig_not_garbled_rowcount >= 4
+                            and len(chal_raw or []) < _orig_not_garbled_rowcount * 0.5)
+                        if not _looks_garbled(chal_raw) and not _chal_collapsed_rows:
                             # Same whole-column Notes-reference stripping as
                             # the ordinary path above, and for the same
                             # reason: img2table's own structure detection
@@ -522,10 +551,25 @@ def find_all_tables(page, pdf_path=None):
                                               None, chal_note_col))
                                 continue
                 if is_unreliable:
-                    # No usable img2table challenger (unavailable, or its own
-                    # result was no better) -- same "clean refusal beats
-                    # confidently wrong data" rule this project already
-                    # applies everywhere else this shape of problem shows up.
+                    # No usable img2table challenger (unavailable, or its
+                    # own result was no better) -- but if the ONLY reason
+                    # this candidate was ever flagged unreliable was the
+                    # column-count trigger, and the raw rows themselves
+                    # were never actually garbled, falling all the way
+                    # through to a blank refusal throws away real,
+                    # uncorrupted data over a heuristic that was only ever
+                    # meant to ask "should we double-check this," not
+                    # "is this actually wrong." Use the original as-is in
+                    # that case (still merely over-segmented, same as
+                    # before this whole challenger mechanism existed) --
+                    # only a genuinely garbled original, or one with no
+                    # figures at all, still gets refused outright.
+                    if _orig_not_garbled_rowcount is None or not _has_any_figure:
+                        continue
+                    rows = _clean(rows)
+                    if not rows:
+                        continue
+                    found.append((tuple(t.bbox), rows, rank + penalty, None, note_col))
                     continue
                 rows = _clean(rows)
                 if not rows:
