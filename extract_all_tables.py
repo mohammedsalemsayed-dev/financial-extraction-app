@@ -435,8 +435,18 @@ def find_all_tables(page, pdf_path=None):
                 _has_any_figure = any(
                     isinstance(c, str) and parse_number(c) is not None
                     for r in (rows or []) for c in (r or []) if c)
+                # 8 -> 7: a Microchip 10-K intangibles table at exactly 7
+                # raw columns silently truncated a value mid-digit
+                # ("3,516" cropped to "3,51") with no adjacent fragment
+                # cell to repair it from -- img2table's own region has the
+                # correct, complete figure, but never got asked since 7
+                # columns is a plausible width for a real table too (this
+                # is the fourth time this exact threshold has needed
+                # lowering; each step verified empirically against a full
+                # FinTabNet re-run, not just the golden-corpus margin,
+                # before committing).
                 is_unreliable = _looks_garbled(rows) or \
-                    (rank != 1 and rows and max(len(r) for r in rows) >= 8) or \
+                    (rank != 1 and rows and max(len(r) for r in rows) >= 7) or \
                     (rows and len(rows) <= 5 and not _has_any_figure)
                 if is_unreliable and page_tables:
                     challenger = rows_in_box(page_tables, *t.bbox)
@@ -1373,7 +1383,7 @@ def _deprose_labels(rows):
     return out
 
 
-_BARE_CURRENCY_RE = re.compile(r"^[$£€¥]$")
+_BARE_CURRENCY_RE = re.compile(r"^([$£€¥]\(?|\()$")
 
 
 def _merge_bare_currency_columns(rows):
@@ -1389,6 +1399,17 @@ def _merge_bare_currency_columns(rows):
     blank on rows where the source didn't print one that row), immediately
     before the real value column. Left in place, each such column reads as
     a genuine extra data column during row alignment.
+
+    Also catches the same thing for a bare "(" (a parenthesized-negative's
+    opening paren, split from its own figure the exact same way -- "$("
+    is included too, since a total/last row can glue the two together
+    while every other row keeps them separate). Found live on a Cardinal
+    Health 2012 10-K deferred-tax table: "(" landed in its own column,
+    leaving the figure cell as "762.9)" -- missing its OPENING paren, so
+    coerce_cell's own paren-negative check (which requires the string to
+    START with "(") never fired and a genuinely negative figure came back
+    positive. Merging first fixes this at the source rather than needing
+    a second, separate sign-repair pass.
 
     Runs on RAW, pre-coercion cell text (called before `_cell()` in
     `_clean`, not after): a column where EVERY non-blank cell is a bare
