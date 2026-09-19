@@ -1432,10 +1432,49 @@ def _merge_bare_currency_columns(rows):
     return out
 
 
+_YEAR_TOKEN_RE = re.compile(r"^(19|20)\d{2}$")
+_YEAR_CONNECTOR_RE = re.compile(r"^[a-z]{2,10}$", re.I)
+
+
+def _merge_year_comparison_label(rows):
+    """A "20XX from 20YY" / "20XX compared to 20YY" style comparison-year
+    label gets its own row split into three separate columns by a
+    text-position strategy: the isolated short connector word between two
+    4-digit numbers reads as its own whitespace-bounded column, just like
+    any other word-gap over-segmentation, except here it's the FIRST cell
+    of the row splitting, not a later one. Found live on a Micron 10-K
+    average-selling-price table: "2013 from 2012" came back as three
+    columns (2013, "from", 2012), pushing every real value two columns to
+    the right of where the table's own header expects them -- analyze()
+    never found a usable value column at all as a result, not just a
+    cosmetic label glitch. Narrowly scoped to exactly this shape (a bare
+    4-digit year, a short connector word, another bare 4-digit year, in
+    that order) rather than a general "merge short leading cells"
+    heuristic, which would be far more likely to eat real short labels."""
+    def _is_year(c):
+        if isinstance(c, (int, float)) and not isinstance(c, bool):
+            return c == int(c) and 1990 <= c <= 2099
+        return isinstance(c, str) and bool(_YEAR_TOKEN_RE.match(c.strip()))
+
+    def _is_connector(c):
+        return isinstance(c, str) and bool(_YEAR_CONNECTOR_RE.match(c.strip()))
+
+    out = []
+    for r in rows:
+        r = list(r)
+        if len(r) >= 3 and _is_year(r[0]) and _is_connector(r[1]) and _is_year(r[2]):
+            y0 = int(r[0]) if not isinstance(r[0], str) else r[0].strip()
+            y1 = int(r[2]) if not isinstance(r[2], str) else r[2].strip()
+            r = [f"{y0} {r[1].strip()} {y1}"] + r[3:]
+        out.append(r)
+    return out
+
+
 def _clean(rows):
     if not rows:
         return []
     rows = _merge_bare_currency_columns(rows)
+    rows = _merge_year_comparison_label(rows)
     rows = [[_cell(c) for c in r] for r in rows]
     # drop fully-empty rows
     rows = [r for r in rows if any(c is not None and str(c).strip() != "" for c in r)]

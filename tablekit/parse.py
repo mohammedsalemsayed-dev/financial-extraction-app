@@ -223,7 +223,15 @@ def coerce_cell(v):
     if s == "" or s == "-" or s == "–":
         return None if s == "" else s
     if NUM_RE.match(s):
-        neg = s.startswith("(") and s.endswith(")")
+        # NOT s.endswith(")") -- NUM_RE's own pattern allows a trailing
+        # "%" AFTER the closing paren ("(11)%"), which is the majority
+        # shape for a negative percentage in a real statement. Requiring
+        # ")" as literally the last character silently dropped the
+        # negative sign on every one of those: found live on a Micron
+        # 10-K average-selling-price table, "(11)%" -> coerce_cell
+        # returned a bare positive 11.0, an actively wrong figure (not
+        # just an incomplete one) shown with total confidence.
+        neg = s.startswith("(") and ")" in s
         had_percent = s.rstrip(")").endswith("%")
         num = s.strip("()%").replace(",", "")
         try:
